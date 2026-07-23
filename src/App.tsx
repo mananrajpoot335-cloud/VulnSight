@@ -21,13 +21,13 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
   
-  // App Data State
-  const [assets, setAssets] = useState<Asset[]>(INITIAL_ASSETS);
-  const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>(INITIAL_VULNERABILITIES);
-  const [scans, setScans] = useState<ScanResult[]>(INITIAL_SCANS);
-  const [scheduledScans, setScheduledScans] = useState<ScheduledScan[]>(INITIAL_SCHEDULED_SCANS);
-  const [remediationTasks, setRemediationTasks] = useState<RemediationTask[]>(INITIAL_REMEDIATION_TASKS);
-  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(INITIAL_ACTIVITY_LOGS);
+  // App Data State - Defaulting to clean real-data posture (No hardcoded/demo vulnerabilities)
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
+  const [scans, setScans] = useState<ScanResult[]>([]);
+  const [scheduledScans, setScheduledScans] = useState<ScheduledScan[]>([]);
+  const [remediationTasks, setRemediationTasks] = useState<RemediationTask[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
   // Modal State
   const [selectedVulnerability, setSelectedVulnerability] = useState<Vulnerability | null>(null);
@@ -42,20 +42,26 @@ export default function App() {
     lastLogin: new Date().toISOString()
   });
 
-  // Calculate Dashboard Metrics
+  // Calculate Dashboard Metrics dynamically from verified scan results
+  const openCritical = vulnerabilities.filter(v => v.severity === 'Critical' && v.status !== 'Fixed').length;
+  const openHigh = vulnerabilities.filter(v => v.severity === 'High' && v.status !== 'Fixed').length;
+  const openMedium = vulnerabilities.filter(v => v.severity === 'Medium' && v.status !== 'Fixed').length;
+  const calculatedRisk = Math.min(100, (openCritical * 30) + (openHigh * 15) + (openMedium * 5));
+  const calculatedSecurity = Math.max(0, 100 - calculatedRisk);
+
   const stats: DashboardStats = {
     totalAssets: assets.length,
     totalScans: scans.length,
     activeHosts: assets.filter(a => a.status === 'Online').length,
-    criticalVulns: vulnerabilities.filter(v => v.severity === 'Critical' && v.status !== 'Fixed').length,
-    highVulns: vulnerabilities.filter(v => v.severity === 'High' && v.status !== 'Fixed').length,
-    mediumVulns: vulnerabilities.filter(v => v.severity === 'Medium' && v.status !== 'Fixed').length,
+    criticalVulns: openCritical,
+    highVulns: openHigh,
+    mediumVulns: openMedium,
     lowVulns: vulnerabilities.filter(v => v.severity === 'Low' && v.status !== 'Fixed').length,
     infoVulns: vulnerabilities.filter(v => v.severity === 'Informational' && v.status !== 'Fixed').length,
     fixedVulns: vulnerabilities.filter(v => v.status === 'Fixed').length,
     openVulns: vulnerabilities.filter(v => v.status !== 'Fixed').length,
-    overallRiskScore: 88,
-    securityScore: 78
+    overallRiskScore: calculatedRisk,
+    securityScore: calculatedSecurity
   };
 
   // Launch New Scan handler
