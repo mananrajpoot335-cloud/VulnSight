@@ -39,14 +39,21 @@ export interface Asset {
 
 export interface RemediationDetails {
   manualFix: string;
+  detectedTargetPlatform?: string;
   bashCommands?: string[];
   powershellCommands?: string[];
   cmdCommands?: string[];
+  cliCommands?: string[];
   registryChanges?: string[];
   configSnippets?: string[];
+  configFilePath?: string;
   patchRecommendation?: string;
   softwareUpgrade?: string;
   verificationCommands?: string[];
+  rollbackSteps?: string[];
+  rebootRequired?: boolean;
+  serviceRestartRequired?: string;
+  estimatedImpact?: string;
 }
 
 export interface Vulnerability {

@@ -161,20 +161,30 @@ app.post('/api/ai-analyze', async (req, res) => {
       });
     }
 
-    const prompt = `You are an expert cybersecurity vulnerability analyst. Analyze this security finding and generate a detailed report in simple, clear English.
+    const prompt = `You are an expert cybersecurity vulnerability analyst. Analyze this security finding and generate an intelligent, platform-aware remediation report in simple, clear English.
 
 Vulnerability Title: ${vulnerability.title}
 Severity: ${vulnerability.severity} (CVSS ${vulnerability.cvssScore})
 CVE: ${vulnerability.cveId || 'N/A'}
 Affected Host: ${vulnerability.affectedHost} (Port: ${vulnerability.affectedPort || 'N/A'})
-Service: ${vulnerability.service || 'N/A'}
+Service / Platform: ${vulnerability.service || 'N/A'}
 Description: ${vulnerability.description}
 Evidence: ${vulnerability.evidence}
+
+CRITICAL REMEDIATION RULES:
+1. Detect or infer the exact target platform (Windows, Linux, Cisco IOS, MikroTik RouterOS, FortiGate, Huawei VRP, Apache, Nginx, IIS, Docker, etc.).
+2. NEVER generate Windows commands for Linux targets, or Linux commands for Windows targets.
+3. NEVER generate Cisco commands for MikroTik, or MikroTik commands for Cisco.
+4. For Linux: generate exact Bash commands (apt/yum/dnf/zypper, systemctl), config paths, and rollback steps.
+5. For Windows: generate exact PowerShell/CMD commands, Registry keys, reboot indicators, and rollback steps.
+6. For Cisco/MikroTik/FortiGate: generate exact CLI syntax commands.
+7. For Web Servers: provide exact config snippets, file paths, and reload commands.
+8. If no vulnerability exists or target is clean, state "No remediation required."
 
 Respond strictly in valid JSON matching this structure:
 {
   "executiveSummary": "1-2 concise sentences for management",
-  "technicalExplanation": "Detailed technical mechanism of the flaw",
+  "technicalExplanation": "Detailed technical mechanism and root cause of the flaw",
   "whyDangerous": "Clear explanation of why this flaw poses extreme danger",
   "attackScenario": "Realistic step-by-step attacker scenario",
   "businessImpact": "Potential operational, financial, or regulatory impact",
@@ -294,6 +304,102 @@ app.post('/api/scans/launch', async (req, res) => {
     rawOutputs['whatweb'] = `WhatWeb analysis for http://${cleanTarget} [200 OK]: Web server active.`;
     rawOutputs['ssl'] = isHttpsOpen ? `SSLyze SSL/TLS audit completed for ${cleanTarget}:443` : `Port 443 closed.`;
 
+    // Build platform-matched remediation object
+    const isRouterOrGateway = cleanTarget.endsWith('.1') || cleanTarget.includes('router') || cleanTarget.includes('gateway') || cleanTarget === '192.168.16.1';
+    const isWindowsHost = cleanTarget.includes('win') || cleanTarget.includes('iis');
+
+    let platformRemediation: any = {};
+
+    if (isRouterOrGateway) {
+      platformRemediation = {
+        detectedTargetPlatform: 'Gateway Router / Network Appliance (Cisco / MikroTik)',
+        manualFix: 'Disable unencrypted HTTP management portal on router or restrict web administration access to dedicated internal management VLAN.',
+        cliCommands: [
+          '# Cisco IOS:',
+          'configure terminal',
+          'no ip http server',
+          'ip http secure-server',
+          'end',
+          'write memory',
+          '# MikroTik RouterOS:',
+          '/ip service set www disabled=yes',
+          '/ip service set www-ssl port=443 disabled=no'
+        ],
+        verificationCommands: [
+          '# Cisco: show ip http server status',
+          '# MikroTik: /ip service print'
+        ],
+        rollbackSteps: [
+          '# Cisco: configure terminal -> ip http server',
+          '# MikroTik: /ip service set www disabled=no'
+        ],
+        rebootRequired: false,
+        serviceRestartRequired: 'Immediate CLI apply',
+        estimatedImpact: 'Low - Disables unencrypted web portal without dropping routed traffic.'
+      };
+    } else if (isWindowsHost) {
+      platformRemediation = {
+        detectedTargetPlatform: 'Windows Server / IIS Web Server',
+        manualFix: 'Configure custom response headers in IIS Manager or web.config file.',
+        powershellCommands: [
+          'Import-Module WebAdministration',
+          'Add-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Frame-Options";value="SAMEORIGIN"}',
+          'Add-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Content-Type-Options";value="nosniff"}',
+          'iisreset /noforce'
+        ],
+        cmdCommands: [
+          'appcmd.exe set config /section:httpProtocol /+customHeaders.[name=\'X-Frame-Options\',value=\'SAMEORIGIN\']',
+          'iisreset'
+        ],
+        configFilePath: 'C:\\inetpub\\wwwroot\\web.config',
+        configSnippets: [
+          '<system.webServer>',
+          '  <httpProtocol>',
+          '    <customHeaders>',
+          '      <add name="X-Frame-Options" value="SAMEORIGIN" />',
+          '      <add name="X-Content-Type-Options" value="nosniff" />',
+          '    </customHeaders>',
+          '  </httpProtocol>',
+          '</system.webServer>'
+        ],
+        verificationCommands: [
+          `Invoke-WebRequest -Uri "http://${cleanTarget}" -Method Head | Select-Object -ExpandProperty Headers`
+        ],
+        rollbackSteps: [
+          'Remove customHeaders entries from IIS Manager or web.config and run iisreset'
+        ],
+        rebootRequired: false,
+        serviceRestartRequired: 'iisreset',
+        estimatedImpact: 'Low - Restarts IIS web service.'
+      };
+    } else {
+      platformRemediation = {
+        detectedTargetPlatform: 'Linux (Ubuntu/Debian) - Nginx Web Server',
+        manualFix: 'Edit Nginx security configuration (/etc/nginx/nginx.conf), append missing HTTP security headers, verify configuration syntax with nginx -t, and reload service.',
+        bashCommands: [
+          'sudo sed -i "/http {/a \\    add_header X-Frame-Options \\"SAMEORIGIN\\" always;\\n    add_header X-Content-Type-Options \\"nosniff\\" always;" /etc/nginx/nginx.conf',
+          'sudo nginx -t',
+          'sudo systemctl reload nginx'
+        ],
+        configFilePath: '/etc/nginx/nginx.conf',
+        configSnippets: [
+          'add_header X-Frame-Options "SAMEORIGIN" always;',
+          'add_header X-Content-Type-Options "nosniff" always;',
+          'add_header Content-Security-Policy "default-src \'self\';" always;'
+        ],
+        verificationCommands: [
+          `curl -I http://${cleanTarget}/`
+        ],
+        rollbackSteps: [
+          'sudo cp /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf',
+          'sudo systemctl reload nginx'
+        ],
+        rebootRequired: false,
+        serviceRestartRequired: 'systemctl reload nginx',
+        estimatedImpact: 'Low - Hot reload without dropping active connections.'
+      };
+    }
+
     // Only add confirmed findings if web service is active
     vulnerabilities.push({
       id: `vuln-${Date.now()}-verified-1`,
@@ -308,19 +414,10 @@ app.post('/api/scans/launch', async (req, res) => {
       evidence: `HTTP GET http://${cleanTarget}/ returned 200 OK but lacked 'X-Content-Type-Options: nosniff' and 'X-Frame-Options' headers. Detected tool: Nikto / HTTP Header Auditor.`,
       riskLevel: 'Low',
       businessImpact: 'Mild exposure to clickjacking or MIME-type sniffing attacks.',
-      recommendation: 'Configure your web server (Nginx/Apache) to append security headers on all responses.',
+      recommendation: 'Configure your web server to append security headers on all responses.',
       references: ['https://owasp.org/www-project-secure-headers/'],
       status: 'Open',
-      remediation: {
-        manualFix: 'Add header directives to web server configuration file.',
-        configSnippets: [
-          'add_header X-Frame-Options "SAMEORIGIN";',
-          'add_header X-Content-Type-Options "nosniff";'
-        ],
-        verificationCommands: [
-          `curl -I http://${cleanTarget}/`
-        ]
-      },
+      remediation: platformRemediation,
       detectedAt: now,
       scanId: scanId
     });
