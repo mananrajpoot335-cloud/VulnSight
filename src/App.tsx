@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   Shield, LayoutDashboard, Terminal, Server, FileText, Settings, Users, 
-  Calendar, CheckSquare, Activity, LogOut, Sun, Moon, Search, AlertTriangle, ChevronRight, User as UserIcon
+  Calendar, CheckSquare, Activity, LogOut, Sun, Moon, Search, AlertTriangle, ChevronRight, User as UserIcon, Trash2
 } from 'lucide-react';
 import { 
   Asset, Vulnerability, ScanResult, ScheduledScan, RemediationTask, ActivityLog, DashboardStats, User, VulnerabilityStatus
@@ -86,7 +86,7 @@ export default function App() {
     return newScan;
   };
 
-  // Delete Scan Handler (Deletes scan + all associated vulnerabilities and report data)
+  // Delete Scan Handler (Deletes scan + all associated vulnerabilities, assets and report data)
   const handleDeleteScan = (scanId: string) => {
     const targetScan = scans.find(s => s.id === scanId);
     if (!targetScan) return;
@@ -105,6 +105,9 @@ export default function App() {
       return true;
     }));
 
+    // Remove assets matching target IP or discovered hosts
+    setAssets(prev => prev.filter(a => a.ip !== targetIp && !discoveredIps.includes(a.ip)));
+
     // Clear modal if active vuln belonged to deleted scan
     if (selectedVulnerability && (selectedVulnerability.scanId === scanId || selectedVulnerability.affectedHost === targetIp)) {
       setSelectedVulnerability(null);
@@ -116,10 +119,47 @@ export default function App() {
       timestamp: new Date().toISOString(),
       user: currentUser.email,
       action: 'Scan Purged',
-      details: `Deleted scan (${targetScan.name}) and all associated vulnerabilities for target ${targetIp}`,
+      details: `Deleted scan (${targetScan.name}), assets, and vulnerabilities for target ${targetIp}`,
       category: 'System'
     };
     setActivityLogs(prev => [newLog, ...prev]);
+  };
+
+  // Delete Individual Asset
+  const handleDeleteAsset = (assetId: string) => {
+    const targetAsset = assets.find(a => a.id === assetId);
+    if (!targetAsset) return;
+
+    setAssets(prev => prev.filter(a => a.id !== assetId));
+
+    // Also remove vulnerabilities for this asset IP
+    setVulnerabilities(prev => prev.filter(v => v.affectedHost !== targetAsset.ip));
+
+    const newLog: ActivityLog = {
+      id: 'act-' + Date.now(),
+      timestamp: new Date().toISOString(),
+      user: currentUser.email,
+      action: 'Asset Deleted',
+      details: `Removed asset ${targetAsset.hostname} (${targetAsset.ip}) from inventory`,
+      category: 'System'
+    };
+    setActivityLogs(prev => [newLog, ...prev]);
+  };
+
+  // Clear All Assets
+  const handleClearAllAssets = () => {
+    if (window.confirm('Are you sure you want to delete all assets from inventory?')) {
+      setAssets([]);
+      const newLog: ActivityLog = {
+        id: 'act-' + Date.now(),
+        timestamp: new Date().toISOString(),
+        user: currentUser.email,
+        action: 'Assets Cleared',
+        details: 'Purged all assets from inventory',
+        category: 'System'
+      };
+      setActivityLogs(prev => [newLog, ...prev]);
+    }
   };
 
   // Delete Individual Vulnerability Finding
@@ -143,11 +183,12 @@ export default function App() {
     setActivityLogs(prev => [newLog, ...prev]);
   };
 
-  // Clear All Scans and Vulnerabilities
+  // Clear All Scans, Vulnerabilities, and Assets
   const handleClearAllScans = () => {
-    if (window.confirm('Are you sure you want to delete all scan history and vulnerability findings? This will completely reset your dashboard.')) {
+    if (window.confirm('Are you sure you want to delete all scan history, assets, and vulnerability findings? This will completely reset your dashboard.')) {
       setScans([]);
       setVulnerabilities([]);
+      setAssets([]);
       setSelectedVulnerability(null);
 
       const newLog: ActivityLog = {
@@ -155,7 +196,7 @@ export default function App() {
         timestamp: new Date().toISOString(),
         user: currentUser.email,
         action: 'Dashboard Reset',
-        details: 'Purged all assessment scans and vulnerability reports',
+        details: 'Purged all assessment scans, assets, and vulnerability reports',
         category: 'System'
       };
       setActivityLogs(prev => [newLog, ...prev]);
@@ -520,6 +561,8 @@ export default function App() {
               assets={assets}
               vulnerabilities={vulnerabilities}
               onSelectAsset={() => setActiveTab('vulnerabilities')}
+              onDeleteAsset={handleDeleteAsset}
+              onClearAllAssets={handleClearAllAssets}
             />
           )}
 
