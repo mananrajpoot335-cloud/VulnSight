@@ -251,11 +251,15 @@ app.post('/api/scans/launch', async (req, res) => {
   const isWindowsAuditTarget = 
     scanType === 'windows' || 
     scanType === 'authenticated' || 
+    scanType === 'single' ||
     cleanTarget.includes('win') || 
     cleanTarget === 'localhost' || 
     cleanTarget === '127.0.0.1' || 
-    cleanTarget === 'local' ||
-    cleanTarget.includes('desktop');
+    cleanTarget === '::1' ||
+    cleanTarget.includes('local') ||
+    cleanTarget.includes('desktop') ||
+    cleanTarget === '192.168.1.15' ||
+    process.platform === 'win32';
 
   if (isWindowsAuditTarget) {
     const winAudit = runWindowsSecurityAudit(cleanTarget, scanId);

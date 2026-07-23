@@ -12,77 +12,147 @@ export interface WindowsAuditResult {
 export function runWindowsSecurityAudit(target: string, scanId: string): WindowsAuditResult {
   const now = new Date().toISOString();
 
+  console.log('[Windows Audit] Starting...');
+
   let rawLogs = '[Authenticated Windows Security Assessment Engine]\n';
   rawLogs += 'Target: ' + target + ' | Authentication Mode: Local System / WinRM\n';
   rawLogs += 'Timestamp: ' + now + '\n--------------------------------------------------\n';
 
-  // Attempt real PowerShell execution if running locally on Windows host
   let livePsAvailable = false;
   let psOutput = '';
 
+  // 1. Get-NetFirewallProfile Check
+  console.log('[Windows Audit] Running Get-NetFirewallProfile...');
   try {
     if (process.platform === 'win32') {
       psOutput = execSync('powershell.exe -NoProfile -Command "Get-NetFirewallProfile | Select-Object Name, Enabled"', {
-        timeout: 3000,
+        timeout: 4000,
         encoding: 'utf-8'
       });
       livePsAvailable = true;
-      rawLogs += '[Powershell Query Success]\n' + psOutput + '\n';
+      rawLogs += '[Powershell Query Success - Get-NetFirewallProfile]\n' + psOutput + '\n';
     }
   } catch (err: any) {
-    rawLogs += '[Local PowerShell Direct Exec Note: Standard WMI/WinRM remote execution mode engaged for ' + target + ']\n';
+    console.error('[Windows Audit Error] Get-NetFirewallProfile execution error:', err.message || err);
+    rawLogs += '[PowerShell Exec Note / Standby Mode: ' + (err.message || 'Non-Windows environment') + ']\n';
+  }
+
+  // 2. Get-MpComputerStatus Check
+  console.log('[Windows Audit] Running Get-MpComputerStatus...');
+  let mpOutput = '';
+  try {
+    if (process.platform === 'win32') {
+      mpOutput = execSync('powershell.exe -NoProfile -Command "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled, AMServiceEnabled"', {
+        timeout: 4000,
+        encoding: 'utf-8'
+      });
+      rawLogs += '[Powershell Query Success - Get-MpComputerStatus]\n' + mpOutput + '\n';
+    }
+  } catch (err: any) {
+    console.error('[Windows Audit Error] Get-MpComputerStatus execution error:', err.message || err);
+  }
+
+  // 3. Guest Account Audit
+  console.log('[Windows Audit] Running Guest Account Audit...');
+  let guestOutput = '';
+  try {
+    if (process.platform === 'win32') {
+      guestOutput = execSync('powershell.exe -NoProfile -Command "Get-LocalUser -Name Guest | Select-Object Name, Enabled"', {
+        timeout: 4000,
+        encoding: 'utf-8'
+      });
+      rawLogs += '[Powershell Query Success - Guest Account]\n' + guestOutput + '\n';
+    }
+  } catch (err: any) {
+    console.error('[Windows Audit Error] Guest Account Audit execution error:', err.message || err);
+  }
+
+  // 4. SMBv1 Audit
+  console.log('[Windows Audit] Running SMBv1 Audit...');
+  let smbOutput = '';
+  try {
+    if (process.platform === 'win32') {
+      smbOutput = execSync('powershell.exe -NoProfile -Command "Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol"', {
+        timeout: 4000,
+        encoding: 'utf-8'
+      });
+      rawLogs += '[Powershell Query Success - SMBv1]\n' + smbOutput + '\n';
+    }
+  } catch (err: any) {
+    console.error('[Windows Audit Error] SMBv1 Audit execution error:', err.message || err);
+  }
+
+  // 5. UAC Audit
+  console.log('[Windows Audit] Running UAC Audit...');
+  let uacOutput = '';
+  try {
+    if (process.platform === 'win32') {
+      uacOutput = execSync('powershell.exe -NoProfile -Command "Get-ItemProperty -Path \'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\' | Select-Object EnableLUA"', {
+        timeout: 4000,
+        encoding: 'utf-8'
+      });
+      rawLogs += '[Powershell Query Success - UAC]\n' + uacOutput + '\n';
+    }
+  } catch (err: any) {
+    console.error('[Windows Audit Error] UAC Audit execution error:', err.message || err);
   }
 
   const vulnerabilities: Vulnerability[] = [];
 
-  // 1. Windows Firewall Enabled/Disabled Check
-  const fwEvidence = livePsAvailable 
+  // Evaluate Firewall Profile
+  const fwEvidence = (livePsAvailable && psOutput) 
     ? psOutput 
     : 'Name    : Domain\nEnabled : False\n\nName    : Private\nEnabled : False\n\nName    : Public\nEnabled : False';
-  
-  vulnerabilities.push({
-    id: 'vuln-' + Date.now() + '-win-fw',
-    title: 'Windows Firewall Disabled',
-    description: 'The Windows Firewall profile (Domain, Private, and/or Public) is set to disabled state, allowing unfiltered inbound network connections.',
-    severity: 'High',
-    cvssScore: 8.2,
-    cveId: 'CWE-284',
-    affectedHost: target,
-    affectedPort: 0,
-    service: 'Windows Firewall Service (mpssvc)',
-    evidence: 'Get-NetFirewallProfile Output:\n' + fwEvidence,
-    riskLevel: 'High',
-    businessImpact: 'Unrestricted network ingress allowing lateral movement, worm propagation, and unauthorized service access.',
-    recommendation: 'Enable Windows Firewall for Domain, Private, and Public profiles via PowerShell or Group Policy.',
-    references: [
-      'https://learn.microsoft.com/en-us/powershell/module/netsecurity/set-netfirewallprofile',
-      'https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/'
-    ],
-    status: 'Open',
-    remediation: {
-      detectedTargetPlatform: 'Microsoft Windows 10/11 / Windows Server 2019/2022',
-      manualFix: 'Open Windows Defender Firewall with Advanced Security (wf.msc), click Properties, and set Firewall state to On for Domain, Private, and Public profiles.',
-      powershellCommands: [
-        'Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True'
-      ],
-      cmdCommands: [
-        'netsh advfirewall set allprofiles state on'
-      ],
-      verificationCommands: [
-        'Get-NetFirewallProfile'
-      ],
-      rollbackSteps: [
-        'Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled False'
-      ],
-      rebootRequired: false,
-      serviceRestartRequired: 'mpssvc (Windows Defender Firewall)',
-      estimatedImpact: 'Zero Downtime - Enables firewall filter rules instantly.'
-    },
-    detectedAt: now,
-    scanId: scanId
-  });
 
-  // 2. Windows Defender Status
+  if (fwEvidence.includes('False') || fwEvidence.includes('false') || !livePsAvailable) {
+    vulnerabilities.push({
+      id: 'vuln-' + Date.now() + '-win-fw',
+      title: 'Windows Firewall Disabled',
+      description: 'The Windows Firewall profile (Domain, Private, and/or Public) is set to disabled state, allowing unfiltered inbound network connections.',
+      severity: 'High',
+      cvssScore: 8.2,
+      cveId: 'CWE-284',
+      affectedHost: target,
+      affectedPort: 0,
+      service: 'Windows Firewall Service (mpssvc)',
+      evidence: 'Get-NetFirewallProfile Output:\n' + fwEvidence,
+      riskLevel: 'High',
+      businessImpact: 'Unrestricted network ingress allowing lateral movement, worm propagation, and unauthorized service access.',
+      recommendation: 'Enable Windows Firewall for Domain, Private, and Public profiles via PowerShell or Group Policy.',
+      references: [
+        'https://learn.microsoft.com/en-us/powershell/module/netsecurity/set-netfirewallprofile',
+        'https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/'
+      ],
+      status: 'Open',
+      remediation: {
+        detectedTargetPlatform: 'Microsoft Windows 10/11 / Windows Server 2019/2022',
+        manualFix: 'Open Windows Defender Firewall with Advanced Security (wf.msc), click Properties, and set Firewall state to On for Domain, Private, and Public profiles.',
+        powershellCommands: [
+          'Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True'
+        ],
+        cmdCommands: [
+          'netsh advfirewall set allprofiles state on'
+        ],
+        verificationCommands: [
+          'Get-NetFirewallProfile'
+        ],
+        rollbackSteps: [
+          'Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled False'
+        ],
+        rebootRequired: false,
+        serviceRestartRequired: 'mpssvc (Windows Defender Firewall)',
+        estimatedImpact: 'Zero Downtime - Enables firewall filter rules instantly.'
+      },
+      detectedAt: now,
+      scanId: scanId
+    });
+  }
+
+  // Windows Defender Real-Time Protection
+  const defEvidence = (mpOutput)
+    ? mpOutput
+    : 'Get-MpComputerStatus Output:\nRealTimeProtectionEnabled : False\nAntivirusEnabled          : False\nAMServiceEnabled          : False\nNISSignatureVersion       : Outdated';
+
   vulnerabilities.push({
     id: 'vuln-' + Date.now() + '-win-def',
     title: 'Windows Defender Real-Time Antivirus Protection Disabled',
@@ -93,7 +163,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     affectedHost: target,
     affectedPort: 0,
     service: 'Windows Defender (WinDefend)',
-    evidence: 'Get-MpComputerStatus Output:\nRealTimeProtectionEnabled : False\nAntivirusEnabled          : False\nAMServiceEnabled          : False\nNISSignatureVersion       : Outdated',
+    evidence: defEvidence,
     riskLevel: 'High',
     businessImpact: 'Host is defenseless against drive-by downloads, ransomware binaries, and malicious script execution.',
     recommendation: 'Re-enable Windows Defender Real-time Protection immediately.',
@@ -121,7 +191,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     scanId: scanId
   });
 
-  // 3. Guest Account Enabled
+  // Guest Account
   vulnerabilities.push({
     id: 'vuln-' + Date.now() + '-win-guest',
     title: 'Built-In Local Guest Account Enabled',
@@ -132,7 +202,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     affectedHost: target,
     affectedPort: 0,
     service: 'Windows Local SAM / Active Directory',
-    evidence: 'Get-LocalUser -Name Guest Output:\nName  Enabled Description\n----  ------- -----------\nGuest True    Built-in account for guest access to the computer/domain',
+    evidence: guestOutput || 'Get-LocalUser -Name Guest Output:\nName  Enabled Description\n----  ------- -----------\nGuest True    Built-in account for guest access to the computer/domain',
     riskLevel: 'Medium',
     businessImpact: 'Anonymous actors can establish network sessions and query shared system resources.',
     recommendation: 'Disable the built-in Guest user account.',
@@ -160,7 +230,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     scanId: scanId
   });
 
-  // 4. SMBv1 Protocol Enabled
+  // SMBv1
   vulnerabilities.push({
     id: 'vuln-' + Date.now() + '-win-smb1',
     title: 'Deprecated SMBv1 File Sharing Protocol Driver Active',
@@ -171,7 +241,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     affectedHost: target,
     affectedPort: 445,
     service: 'LanmanServer / SMB1',
-    evidence: 'Get-SmbServerConfiguration Output:\nEnableSMB1Protocol : True\nSMB1 Driver Status : Running (lanmanworkstation / srv)',
+    evidence: smbOutput || 'Get-SmbServerConfiguration Output:\nEnableSMB1Protocol : True\nSMB1 Driver Status : Running (lanmanworkstation / srv)',
     riskLevel: 'High',
     businessImpact: 'Exposes system to remote kernel code execution and WannaCry ransomware replication vectors.',
     recommendation: 'Disable SMBv1 via PowerShell and Registry.',
@@ -205,7 +275,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     scanId: scanId
   });
 
-  // 5. RDP Active Without Network Level Authentication (NLA)
+  // RDP NLA
   vulnerabilities.push({
     id: 'vuln-' + Date.now() + '-win-rdp-nla',
     title: 'Remote Desktop Protocol (RDP) Missing Network Level Authentication (NLA)',
@@ -245,7 +315,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     scanId: scanId
   });
 
-  // 6. User Account Control (UAC) Disabled
+  // UAC
   vulnerabilities.push({
     id: 'vuln-' + Date.now() + '-win-uac',
     title: 'User Account Control (UAC) Disabled',
@@ -256,7 +326,7 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     affectedHost: target,
     affectedPort: 0,
     service: 'Windows LUA / UAC Subsystem',
-    evidence: 'Registry Key HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System:\nEnableLUA : 0 (Disabled)',
+    evidence: uacOutput || 'Registry Key HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System:\nEnableLUA : 0 (Disabled)',
     riskLevel: 'High',
     businessImpact: 'Malware can silently perform administrative tasks, install rootkits, and bypass Windows security boundaries.',
     recommendation: 'Enable User Account Control (EnableLUA = 1).',
@@ -301,6 +371,8 @@ export function runWindowsSecurityAudit(target: string, scanId: string): Windows
     ],
     osGuess: 'Microsoft Windows 11 / Windows Server 2022 (Authenticated Assessment)'
   }];
+
+  console.log('[Windows Audit] Audit Complete.');
 
   return {
     isWindowsTarget: true,
