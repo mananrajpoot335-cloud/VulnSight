@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { generateDynamicRemediation } from './server/remediationEngine.js';
 
 dotenv.config();
 
@@ -135,28 +136,38 @@ app.post('/api/ai-analyze', async (req, res) => {
     const ai = getGeminiClient();
 
     if (!ai) {
-      // Fallback response if GEMINI_API_KEY is not supplied
+      // Dynamic Fallback remediation response matching detected target platform
+      const dynRemediation = generateDynamicRemediation(
+        vulnerability.affectedHost,
+        vulnerability.affectedPort || 80,
+        vulnerability.service || 'http',
+        '',
+        vulnerability.title,
+        vulnerability.severity,
+        vulnerability.cveId || '',
+        vulnerability.evidence || ''
+      );
+
       return res.json({
-        executiveSummary: `[Rule-based AI Summary] ${vulnerability.title} represents a critical security risk on host ${vulnerability.affectedHost}. Immediate remediation is strongly recommended.`,
-        technicalExplanation: `The service on ${vulnerability.affectedHost}:${vulnerability.affectedPort || 'N/A'} (${vulnerability.service || 'Unknown'}) exhibits signature traits for ${vulnerability.cveId || 'known vulnerability'}.`,
-        whyDangerous: 'Exposes system memory, authentication cookies, or operational state to unauthorized remote network actors without requiring privilege credentials.',
-        attackScenario: `An attacker crafts targeted packets to ${vulnerability.affectedHost} on port ${vulnerability.affectedPort || 80}, capturing internal state and leveraging findings for secondary exploitation.`,
-        businessImpact: 'Risk of confidential data exposure, regulatory non-compliance fines, and reputational brand damage.',
+        executiveSummary: `[Enterprise Remediation Engine] Finding on ${vulnerability.affectedHost} (${dynRemediation.detectedTargetPlatform}). Root cause: ${dynRemediation.rootCause}`,
+        technicalExplanation: dynRemediation.technicalExplanation,
+        whyDangerous: 'Exposes application or operating system layer to unauthorized remote exploitation or credential leakage.',
+        attackScenario: `An attacker connects to ${vulnerability.affectedHost}:${vulnerability.affectedPort || 80} and leverages ${vulnerability.title} to gain unauthorized insights or execute privilege escalation vectors.`,
+        businessImpact: `Potential downtime, non-compliance penalties, and compromise of target host (${dynRemediation.detectedTargetPlatform}).`,
         riskPriority: vulnerability.severity === 'Critical' ? 'P1 - Immediate (Within 24 Hours)' : 'P2 - High (Within 7 Days)',
         stepByStepRemediation: [
-          `Review network exposure for host ${vulnerability.affectedHost}`,
-          `Execute system updates for packages controlling ${vulnerability.service || 'service'}`,
-          'Validate non-vulnerability status using Nmap or security regression test suites',
-          'Document patch completion in the VulnSight audit log'
+          `Detected Platform: ${dynRemediation.detectedTargetPlatform}`,
+          `Manual Fix: ${dynRemediation.manualFix}`,
+          `Configuration File Path: ${dynRemediation.configFilePath || 'N/A'}`,
+          `Reboot Required: ${dynRemediation.rebootRequired ? 'Yes' : 'No'}`
         ],
-        verificationSteps: [
-          `Run verification command: ${vulnerability.remediation?.verificationCommands?.[0] || 'nmap -sV -p ' + (vulnerability.affectedPort || 80) + ' ' + vulnerability.affectedHost}`,
-          'Check application log streams for zero abnormal error signatures'
+        verificationSteps: dynRemediation.verificationCommands || [
+          `Run verification command: nmap -sV -p ${vulnerability.affectedPort || 80} ${vulnerability.affectedHost}`
         ],
         bestPractices: [
-          'Enable automated package security updates',
-          'Enforce strict ingress firewall rules blocking unused ports',
-          'Deploy Web Application Firewall (WAF) policies for public endpoints'
+          'Enforce strict platform firewall ingress policies',
+          'Automate security patch validation pipelines',
+          'Deploy configuration drift monitoring for host files'
         ]
       });
     }
@@ -304,101 +315,17 @@ app.post('/api/scans/launch', async (req, res) => {
     rawOutputs['whatweb'] = `WhatWeb analysis for http://${cleanTarget} [200 OK]: Web server active.`;
     rawOutputs['ssl'] = isHttpsOpen ? `SSLyze SSL/TLS audit completed for ${cleanTarget}:443` : `Port 443 closed.`;
 
-    // Build platform-matched remediation object
-    const isRouterOrGateway = cleanTarget.endsWith('.1') || cleanTarget.includes('router') || cleanTarget.includes('gateway') || cleanTarget === '192.168.16.1';
-    const isWindowsHost = cleanTarget.includes('win') || cleanTarget.includes('iis');
-
-    let platformRemediation: any = {};
-
-    if (isRouterOrGateway) {
-      platformRemediation = {
-        detectedTargetPlatform: 'Gateway Router / Network Appliance (Cisco / MikroTik)',
-        manualFix: 'Disable unencrypted HTTP management portal on router or restrict web administration access to dedicated internal management VLAN.',
-        cliCommands: [
-          '# Cisco IOS:',
-          'configure terminal',
-          'no ip http server',
-          'ip http secure-server',
-          'end',
-          'write memory',
-          '# MikroTik RouterOS:',
-          '/ip service set www disabled=yes',
-          '/ip service set www-ssl port=443 disabled=no'
-        ],
-        verificationCommands: [
-          '# Cisco: show ip http server status',
-          '# MikroTik: /ip service print'
-        ],
-        rollbackSteps: [
-          '# Cisco: configure terminal -> ip http server',
-          '# MikroTik: /ip service set www disabled=no'
-        ],
-        rebootRequired: false,
-        serviceRestartRequired: 'Immediate CLI apply',
-        estimatedImpact: 'Low - Disables unencrypted web portal without dropping routed traffic.'
-      };
-    } else if (isWindowsHost) {
-      platformRemediation = {
-        detectedTargetPlatform: 'Windows Server / IIS Web Server',
-        manualFix: 'Configure custom response headers in IIS Manager or web.config file.',
-        powershellCommands: [
-          'Import-Module WebAdministration',
-          'Add-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Frame-Options";value="SAMEORIGIN"}',
-          'Add-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Content-Type-Options";value="nosniff"}',
-          'iisreset /noforce'
-        ],
-        cmdCommands: [
-          'appcmd.exe set config /section:httpProtocol /+customHeaders.[name=\'X-Frame-Options\',value=\'SAMEORIGIN\']',
-          'iisreset'
-        ],
-        configFilePath: 'C:\\inetpub\\wwwroot\\web.config',
-        configSnippets: [
-          '<system.webServer>',
-          '  <httpProtocol>',
-          '    <customHeaders>',
-          '      <add name="X-Frame-Options" value="SAMEORIGIN" />',
-          '      <add name="X-Content-Type-Options" value="nosniff" />',
-          '    </customHeaders>',
-          '  </httpProtocol>',
-          '</system.webServer>'
-        ],
-        verificationCommands: [
-          `Invoke-WebRequest -Uri "http://${cleanTarget}" -Method Head | Select-Object -ExpandProperty Headers`
-        ],
-        rollbackSteps: [
-          'Remove customHeaders entries from IIS Manager or web.config and run iisreset'
-        ],
-        rebootRequired: false,
-        serviceRestartRequired: 'iisreset',
-        estimatedImpact: 'Low - Restarts IIS web service.'
-      };
-    } else {
-      platformRemediation = {
-        detectedTargetPlatform: 'Linux (Ubuntu/Debian) - Nginx Web Server',
-        manualFix: 'Edit Nginx security configuration (/etc/nginx/nginx.conf), append missing HTTP security headers, verify configuration syntax with nginx -t, and reload service.',
-        bashCommands: [
-          'sudo sed -i "/http {/a \\    add_header X-Frame-Options \\"SAMEORIGIN\\" always;\\n    add_header X-Content-Type-Options \\"nosniff\\" always;" /etc/nginx/nginx.conf',
-          'sudo nginx -t',
-          'sudo systemctl reload nginx'
-        ],
-        configFilePath: '/etc/nginx/nginx.conf',
-        configSnippets: [
-          'add_header X-Frame-Options "SAMEORIGIN" always;',
-          'add_header X-Content-Type-Options "nosniff" always;',
-          'add_header Content-Security-Policy "default-src \'self\';" always;'
-        ],
-        verificationCommands: [
-          `curl -I http://${cleanTarget}/`
-        ],
-        rollbackSteps: [
-          'sudo cp /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf',
-          'sudo systemctl reload nginx'
-        ],
-        rebootRequired: false,
-        serviceRestartRequired: 'systemctl reload nginx',
-        estimatedImpact: 'Low - Hot reload without dropping active connections.'
-      };
-    }
+    // Build dynamic platform-matched remediation object using detection engine
+    const platformRemediation = generateDynamicRemediation(
+      cleanTarget,
+      isHttpOpen ? 80 : 443,
+      isHttpsOpen ? 'https' : 'http',
+      '',
+      'Missing HTTP Security Headers (X-Content-Type-Options / Content-Security-Policy)',
+      'Low',
+      'CWE-693',
+      `HTTP GET http://${cleanTarget}/ returned 200 OK but lacked security headers.`
+    );
 
     // Only add confirmed findings if web service is active
     vulnerabilities.push({
