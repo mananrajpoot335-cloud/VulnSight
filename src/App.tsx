@@ -86,6 +86,82 @@ export default function App() {
     return newScan;
   };
 
+  // Delete Scan Handler (Deletes scan + all associated vulnerabilities and report data)
+  const handleDeleteScan = (scanId: string) => {
+    const targetScan = scans.find(s => s.id === scanId);
+    if (!targetScan) return;
+
+    const targetIp = targetScan.target;
+    const discoveredIps = targetScan.discoveredHosts?.map(h => h.ip) || [];
+
+    // Remove scan from state
+    setScans(prev => prev.filter(s => s.id !== scanId));
+
+    // Remove all vulnerabilities associated with this scan ID or target IP
+    setVulnerabilities(prev => prev.filter(v => {
+      if (v.scanId === scanId) return false;
+      if (v.affectedHost === targetIp) return false;
+      if (discoveredIps.includes(v.affectedHost)) return false;
+      return true;
+    }));
+
+    // Clear modal if active vuln belonged to deleted scan
+    if (selectedVulnerability && (selectedVulnerability.scanId === scanId || selectedVulnerability.affectedHost === targetIp)) {
+      setSelectedVulnerability(null);
+    }
+
+    // Add activity log
+    const newLog: ActivityLog = {
+      id: 'act-' + Date.now(),
+      timestamp: new Date().toISOString(),
+      user: currentUser.email,
+      action: 'Scan Purged',
+      details: `Deleted scan (${targetScan.name}) and all associated vulnerabilities for target ${targetIp}`,
+      category: 'System'
+    };
+    setActivityLogs(prev => [newLog, ...prev]);
+  };
+
+  // Delete Individual Vulnerability Finding
+  const handleDeleteVulnerability = (vulnId: string) => {
+    const targetVuln = vulnerabilities.find(v => v.id === vulnId);
+    if (!targetVuln) return;
+
+    setVulnerabilities(prev => prev.filter(v => v.id !== vulnId));
+    if (selectedVulnerability && selectedVulnerability.id === vulnId) {
+      setSelectedVulnerability(null);
+    }
+
+    const newLog: ActivityLog = {
+      id: 'act-' + Date.now(),
+      timestamp: new Date().toISOString(),
+      user: currentUser.email,
+      action: 'Vulnerability Deleted',
+      details: `Deleted finding '${targetVuln.title}' on ${targetVuln.affectedHost}`,
+      category: 'Vulnerability'
+    };
+    setActivityLogs(prev => [newLog, ...prev]);
+  };
+
+  // Clear All Scans and Vulnerabilities
+  const handleClearAllScans = () => {
+    if (window.confirm('Are you sure you want to delete all scan history and vulnerability findings? This will completely reset your dashboard.')) {
+      setScans([]);
+      setVulnerabilities([]);
+      setSelectedVulnerability(null);
+
+      const newLog: ActivityLog = {
+        id: 'act-' + Date.now(),
+        timestamp: new Date().toISOString(),
+        user: currentUser.email,
+        action: 'Dashboard Reset',
+        details: 'Purged all assessment scans and vulnerability reports',
+        category: 'System'
+      };
+      setActivityLogs(prev => [newLog, ...prev]);
+    }
+  };
+
   // Status Change Handler for Vulnerabilities
   const handleVulnerabilityStatusChange = (vulnId: string, newStatus: VulnerabilityStatus) => {
     setVulnerabilities(prev => prev.map(v => v.id === vulnId ? { ...v, status: newStatus } : v));
@@ -321,6 +397,9 @@ export default function App() {
               onSelectVulnerability={(v) => setSelectedVulnerability(v)}
               onSelectScan={() => setActiveTab('scans')}
               onLaunchScanClick={() => setActiveTab('scans')}
+              onDeleteScan={handleDeleteScan}
+              onDeleteVulnerability={handleDeleteVulnerability}
+              onClearAllScans={handleClearAllScans}
             />
           )}
 
@@ -328,6 +407,8 @@ export default function App() {
             <ScanConsole
               onRunScan={handleRunScan}
               onScanCompleted={() => setActiveTab('vulnerabilities')}
+              scans={scans}
+              onDeleteScan={handleDeleteScan}
             />
           )}
 
@@ -336,8 +417,24 @@ export default function App() {
               <div className="flex items-center justify-between bg-slate-900 border border-slate-800 p-4 rounded-xl">
                 <div>
                   <h3 className="text-lg font-bold text-slate-100">Discovered Vulnerabilities ({vulnerabilities.length})</h3>
-                  <p className="text-xs text-slate-400">Click any vulnerability row to view AI analysis and commands.</p>
+                  <p className="text-xs text-slate-400">Click any vulnerability row to view AI analysis, or use the delete button to purge findings.</p>
                 </div>
+
+                {vulnerabilities.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to delete all discovered vulnerability findings?')) {
+                        setVulnerabilities([]);
+                        setSelectedVulnerability(null);
+                      }
+                    }}
+                    className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear All Findings</span>
+                  </button>
+                )}
               </div>
 
               <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
@@ -350,46 +447,67 @@ export default function App() {
                         <th className="p-3.5">Host / Port</th>
                         <th className="p-3.5">CVE</th>
                         <th className="p-3.5">Status</th>
-                        <th className="p-3.5 text-right">Action</th>
+                        <th className="p-3.5 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {vulnerabilities.map((v) => (
-                        <tr
-                          key={v.id}
-                          onClick={() => setSelectedVulnerability(v)}
-                          className="hover:bg-slate-800/50 cursor-pointer transition-colors"
-                        >
-                          <td className="p-3.5 whitespace-nowrap">
-                            <span className={`px-2 py-0.5 font-bold rounded uppercase text-[10px] ${
-                              v.severity === 'Critical' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
-                              v.severity === 'High' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
-                              'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                            }`}>
-                              {v.severity} ({v.cvssScore})
-                            </span>
-                          </td>
-                          <td className="p-3.5 font-medium text-slate-100 max-w-xs truncate">
-                            {v.title}
-                          </td>
-                          <td className="p-3.5 font-mono text-blue-400 whitespace-nowrap">
-                            {v.affectedHost}{v.affectedPort ? `:${v.affectedPort}` : ''}
-                          </td>
-                          <td className="p-3.5 font-mono text-slate-400 whitespace-nowrap">
-                            {v.cveId || 'N/A'}
-                          </td>
-                          <td className="p-3.5 whitespace-nowrap">
-                            <span className={`px-2 py-0.5 rounded text-[11px] ${
-                              v.status === 'Fixed' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-300'
-                            }`}>
-                              {v.status}
-                            </span>
-                          </td>
-                          <td className="p-3.5 text-right whitespace-nowrap">
-                            <button className="text-blue-400 hover:text-blue-300 font-semibold">Inspect →</button>
+                      {vulnerabilities.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-400">
+                            No vulnerability findings recorded. Clean scan posture!
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        vulnerabilities.map((v) => (
+                          <tr
+                            key={v.id}
+                            onClick={() => setSelectedVulnerability(v)}
+                            className="hover:bg-slate-800/50 cursor-pointer transition-colors group"
+                          >
+                            <td className="p-3.5 whitespace-nowrap">
+                              <span className={`px-2 py-0.5 font-bold rounded uppercase text-[10px] ${
+                                v.severity === 'Critical' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                                v.severity === 'High' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+                                'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              }`}>
+                                {v.severity} ({v.cvssScore})
+                              </span>
+                            </td>
+                            <td className="p-3.5 font-medium text-slate-100 max-w-xs truncate">
+                              {v.title}
+                            </td>
+                            <td className="p-3.5 font-mono text-blue-400 whitespace-nowrap">
+                              {v.affectedHost}{v.affectedPort ? `:${v.affectedPort}` : ''}
+                            </td>
+                            <td className="p-3.5 font-mono text-slate-400 whitespace-nowrap">
+                              {v.cveId || 'N/A'}
+                            </td>
+                            <td className="p-3.5 whitespace-nowrap">
+                              <span className={`px-2 py-0.5 rounded text-[11px] ${
+                                v.status === 'Fixed' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-300'
+                              }`}>
+                                {v.status}
+                              </span>
+                            </td>
+                            <td className="p-3.5 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end space-x-2">
+                                <button className="text-blue-400 hover:text-blue-300 font-semibold">Inspect →</button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteVulnerability(v.id);
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded transition-colors"
+                                  title="Delete finding"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -470,6 +588,7 @@ export default function App() {
         onStatusChange={handleVulnerabilityStatusChange}
         onRequestAiAnalysis={handleRequestAiAnalysis}
         isAiLoading={isAiLoading}
+        onDeleteVulnerability={handleDeleteVulnerability}
       />
     </div>
   );

@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
   ShieldAlert, ShieldCheck, Activity, Server, AlertTriangle, 
-  CheckCircle2, AlertOctagon, Info, FileText, Search, Play, Plus, Clock
+  CheckCircle2, AlertOctagon, Info, FileText, Search, Play, Plus, Clock, Trash2
 } from 'lucide-react';
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, AreaChart, Area 
@@ -17,6 +17,9 @@ interface DashboardProps {
   onSelectVulnerability: (vuln: Vulnerability) => void;
   onSelectScan: (scan: ScanResult) => void;
   onLaunchScanClick: () => void;
+  onDeleteScan?: (scanId: string) => void;
+  onDeleteVulnerability?: (vulnId: string) => void;
+  onClearAllScans?: () => void;
 }
 
 export const DashboardOverview: React.FC<DashboardProps> = ({
@@ -28,6 +31,9 @@ export const DashboardOverview: React.FC<DashboardProps> = ({
   onSelectVulnerability,
   onSelectScan,
   onLaunchScanClick,
+  onDeleteScan,
+  onDeleteVulnerability,
+  onClearAllScans,
 }) => {
   // Severity Chart Data
   const severityData = [
@@ -73,6 +79,17 @@ export const DashboardOverview: React.FC<DashboardProps> = ({
           </p>
         </div>
         <div className="flex items-center space-x-3 w-full md:w-auto">
+          {(scans.length > 0 || vulnerabilities.length > 0) && onClearAllScans && (
+            <button
+              onClick={onClearAllScans}
+              className="flex-1 md:flex-none flex items-center justify-center space-x-2 bg-[#0f172a] hover:bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/40 font-semibold px-3 py-2 rounded-md shadow transition-all text-xs"
+              title="Delete all scans and clear dashboard"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear All Scans</span>
+            </button>
+          )}
+
           <button
             id="btn-quick-scan"
             onClick={onLaunchScanClick}
@@ -237,43 +254,65 @@ export const DashboardOverview: React.FC<DashboardProps> = ({
           </div>
 
           <div className="space-y-2.5">
-            {vulnerabilities.slice(0, 4).map((vuln) => (
-              <div
-                key={vuln.id}
-                onClick={() => onSelectVulnerability(vuln)}
-                className="p-3 bg-[#0f172a] hover:bg-[#020617] border border-[#334155] rounded-md cursor-pointer transition-all flex items-start justify-between gap-3 group"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center space-x-2">
-                    <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase ${
-                      vuln.severity === 'Critical' ? 'bg-[#ef4444]/20 text-[#ef4444]' :
-                      vuln.severity === 'High' ? 'bg-[#f97316]/20 text-[#f97316]' :
-                      'bg-[#eab308]/20 text-[#eab308]'
-                    }`}>
-                      {vuln.severity} ({vuln.cvssScore})
-                    </span>
-                    {vuln.cveId && (
-                      <span className="text-[11px] font-mono text-[#94a3b8] bg-[#1e293b] px-1.5 py-0.5 rounded border border-[#334155]">
-                        {vuln.cveId}
+            {vulnerabilities.length === 0 ? (
+              <div className="p-6 text-center text-xs text-[#94a3b8] bg-[#0f172a] rounded-md border border-[#334155]">
+                No active vulnerabilities found.
+              </div>
+            ) : (
+              vulnerabilities.slice(0, 4).map((vuln) => (
+                <div
+                  key={vuln.id}
+                  onClick={() => onSelectVulnerability(vuln)}
+                  className="p-3 bg-[#0f172a] hover:bg-[#020617] border border-[#334155] rounded-md cursor-pointer transition-all flex items-start justify-between gap-3 group"
+                >
+                  <div className="space-y-1 min-w-0 flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase ${
+                        vuln.severity === 'Critical' ? 'bg-[#ef4444]/20 text-[#ef4444]' :
+                        vuln.severity === 'High' ? 'bg-[#f97316]/20 text-[#f97316]' :
+                        'bg-[#eab308]/20 text-[#eab308]'
+                      }`}>
+                        {vuln.severity} ({vuln.cvssScore})
                       </span>
+                      {vuln.cveId && (
+                        <span className="text-[11px] font-mono text-[#94a3b8] bg-[#1e293b] px-1.5 py-0.5 rounded border border-[#334155]">
+                          {vuln.cveId}
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="text-xs font-semibold text-[#f8fafc] group-hover:text-[#3b82f6] transition-colors line-clamp-1">
+                      {vuln.title}
+                    </h4>
+                    <div className="text-[11px] text-[#94a3b8]">
+                      Target Host: <code className="text-[#3b82f6]">{vuln.affectedHost}</code>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <div className="text-right">
+                      <span className="text-[11px] text-[#94a3b8] block">{new Date(vuln.detectedAt).toLocaleDateString()}</span>
+                      <span className="inline-block mt-1 text-[10px] px-2 py-0.5 rounded bg-[#1e293b] text-[#10b981] font-semibold">
+                        {vuln.status}
+                      </span>
+                    </div>
+
+                    {onDeleteVulnerability && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteVulnerability(vuln.id);
+                        }}
+                        title="Delete vulnerability finding"
+                        className="p-1.5 text-[#94a3b8] hover:text-[#ef4444] hover:bg-[#1e293b] rounded transition-all ml-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     )}
                   </div>
-                  <h4 className="text-xs font-semibold text-[#f8fafc] group-hover:text-[#3b82f6] transition-colors line-clamp-1">
-                    {vuln.title}
-                  </h4>
-                  <div className="text-[11px] text-[#94a3b8]">
-                    Target Host: <code className="text-[#3b82f6]">{vuln.affectedHost}</code>
-                  </div>
                 </div>
-
-                <div className="text-right shrink-0">
-                  <span className="text-[11px] text-[#94a3b8] block">{new Date(vuln.detectedAt).toLocaleDateString()}</span>
-                  <span className="inline-block mt-1 text-[10px] px-2 py-0.5 rounded bg-[#1e293b] text-[#10b981] font-semibold">
-                    {vuln.status}
-                  </span>
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
 
@@ -292,37 +331,61 @@ export const DashboardOverview: React.FC<DashboardProps> = ({
           </div>
 
           <div className="space-y-2.5">
-            {scans.slice(0, 4).map((scan) => (
-              <div
-                key={scan.id}
-                onClick={() => onSelectScan(scan)}
-                className="p-3 bg-[#0f172a] hover:bg-[#020617] border border-[#334155] rounded-md cursor-pointer transition-all flex items-center justify-between gap-3 group"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs font-bold text-[#f8fafc] group-hover:text-[#3b82f6] transition-colors">
-                      {scan.name}
-                    </span>
-                    <span className="px-1.5 py-0.5 text-[10px] bg-[#1e293b] text-[#94a3b8] rounded uppercase">
-                      {scan.scanType}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-[#94a3b8]">
-                    Target: <code className="text-[#3b82f6]">{scan.target}</code>
-                  </div>
-                </div>
-
-                <div className="text-right shrink-0">
-                  <div className="flex items-center space-x-1.5 justify-end text-xs font-mono font-bold text-[#f8fafc]">
-                    <span>Risk: {scan.riskScore}</span>
-                    <span className="w-2 h-2 rounded-full bg-[#10b981]" />
-                  </div>
-                  <span className="text-[10px] text-[#94a3b8] block mt-0.5">
-                    {new Date(scan.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
+            {scans.length === 0 ? (
+              <div className="p-6 text-center text-xs text-[#94a3b8] bg-[#0f172a] rounded-md border border-[#334155]">
+                No assessment scans recorded. Launch a new scan above.
               </div>
-            ))}
+            ) : (
+              scans.slice(0, 4).map((scan) => (
+                <div
+                  key={scan.id}
+                  onClick={() => onSelectScan(scan)}
+                  className="p-3 bg-[#0f172a] hover:bg-[#020617] border border-[#334155] rounded-md cursor-pointer transition-all flex items-center justify-between gap-3 group"
+                >
+                  <div className="space-y-1 min-w-0 flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-bold text-[#f8fafc] group-hover:text-[#3b82f6] transition-colors truncate">
+                        {scan.name}
+                      </span>
+                      <span className="px-1.5 py-0.5 text-[10px] bg-[#1e293b] text-[#94a3b8] rounded uppercase shrink-0">
+                        {scan.scanType}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-[#94a3b8]">
+                      Target: <code className="text-[#3b82f6]">{scan.target}</code>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <div className="text-right">
+                      <div className="flex items-center space-x-1.5 justify-end text-xs font-mono font-bold text-[#f8fafc]">
+                        <span>Risk: {scan.riskScore}</span>
+                        <span className="w-2 h-2 rounded-full bg-[#10b981]" />
+                      </div>
+                      <span className="text-[10px] text-[#94a3b8] block mt-0.5">
+                        {new Date(scan.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+
+                    {onDeleteScan && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Delete scan for ${scan.target}? All associated vulnerability reports for this IP will be deleted.`)) {
+                            onDeleteScan(scan.id);
+                          }
+                        }}
+                        title="Delete scan and all report findings"
+                        className="p-1.5 text-[#94a3b8] hover:text-[#ef4444] hover:bg-[#1e293b] rounded transition-all ml-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

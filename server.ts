@@ -407,6 +407,18 @@ app.post('/api/scans/launch', async (req, res) => {
   res.json(newScan);
 });
 
+// Delete Scan API Endpoint
+app.delete('/api/scans/:id', (req, res) => {
+  const { id } = req.params;
+  const initialLength = mockScans.length;
+  mockScans = mockScans.filter(s => s.id !== id);
+  if (mockScans.length < initialLength) {
+    res.json({ success: true, message: `Scan ${id} deleted successfully.` });
+  } else {
+    res.status(404).json({ error: `Scan ${id} not found.` });
+  }
+});
+
 // Vite Middleware for Dev or Static files for Production
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {

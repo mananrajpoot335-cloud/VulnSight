@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { 
-  Play, Shield, Server, Globe, Cpu, CheckSquare, Square, AlertCircle, RefreshCw, Terminal, Layers
+  Play, Shield, Server, Globe, Cpu, CheckSquare, Square, AlertCircle, RefreshCw, Terminal, Layers, Trash2
 } from 'lucide-react';
 import { ScanType, ScanPluginConfig, ScanResult } from '../types';
 
@@ -12,9 +12,11 @@ interface ScanConsoleProps {
     plugins: ScanPluginConfig;
   }) => Promise<ScanResult>;
   onScanCompleted: (scan: ScanResult) => void;
+  scans?: ScanResult[];
+  onDeleteScan?: (scanId: string) => void;
 }
 
-export const ScanConsole: React.FC<ScanConsoleProps> = ({ onRunScan, onScanCompleted }) => {
+export const ScanConsole: React.FC<ScanConsoleProps> = ({ onRunScan, onScanCompleted, scans = [], onDeleteScan }) => {
   const [scanType, setScanType] = useState<ScanType>('single');
   const [target, setTarget] = useState('192.168.1.15');
   const [scanName, setScanName] = useState('');
@@ -280,6 +282,63 @@ export const ScanConsole: React.FC<ScanConsoleProps> = ({ onRunScan, onScanCompl
           </div>
         </form>
       </div>
+
+      {/* Target History & Delete Management Section */}
+      {scans.length > 0 && (
+        <div className="bg-[#1e293b] border border-[#334155] rounded-xl p-6 space-y-4">
+          <div className="flex items-center justify-between border-b border-[#334155] pb-3">
+            <div>
+              <h3 className="text-sm font-bold text-[#f8fafc]">Active Scan Targets & Reports ({scans.length})</h3>
+              <p className="text-xs text-[#94a3b8]">Delete a target scan to permanently remove its findings and clean up your dashboard.</p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {scans.map((scan) => (
+              <div
+                key={scan.id}
+                className="p-4 bg-[#0f172a] border border-[#334155] rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-4"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <span className="font-bold text-xs text-[#f8fafc]">{scan.name}</span>
+                    <span className="px-2 py-0.5 text-[10px] bg-[#1e293b] text-[#3b82f6] rounded uppercase font-semibold border border-[#3b82f6]/30">
+                      {scan.scanType}
+                    </span>
+                    <span className="text-xs text-[#10b981] font-mono bg-[#10b981]/10 px-2 py-0.5 rounded">
+                      Risk: {scan.riskScore}/100
+                    </span>
+                  </div>
+                  <div className="text-xs text-[#94a3b8] flex items-center space-x-3">
+                    <span>Target IP: <code className="text-[#3b82f6] font-mono">{scan.target}</code></span>
+                    <span>•</span>
+                    <span>Discovered Vulnerabilities: <strong className="text-white">{scan.vulnerabilities?.length || 0}</strong></span>
+                    <span>•</span>
+                    <span>Date: {new Date(scan.startTime).toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 shrink-0">
+                  {onDeleteScan && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Delete scan for IP ${scan.target}? All vulnerability findings and reports associated with this target will be purged.`)) {
+                          onDeleteScan(scan.id);
+                        }
+                      }}
+                      className="bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 text-xs font-semibold px-3 py-1.5 rounded-md flex items-center space-x-1.5 transition-all"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Scan & Reports</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
