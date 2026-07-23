@@ -6,6 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { generateDynamicRemediation } from './server/remediationEngine.js';
+import { runWindowsSecurityAudit } from './server/windowsAuditEngine.js';
 
 dotenv.config();
 
@@ -245,110 +246,132 @@ app.post('/api/scans/launch', async (req, res) => {
 
   const cleanTarget = target.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
-  // Step 1: Real service reachability check (attempt TCP connect to common ports or ping)
-  let isHttpOpen = false;
-  let isHttpsOpen = false;
-  let isSshOpen = false;
+  let hasWebService = false;
 
-  const checkTcpPort = (host: string, port: number, timeoutMs = 1500): Promise<boolean> => {
-    return new Promise((resolve) => {
-      const socket = new net.Socket();
-      let status = false;
-      socket.setTimeout(timeoutMs);
-      socket.on('connect', () => {
-        status = true;
-        socket.destroy();
-      });
-      socket.on('timeout', () => {
-        socket.destroy();
-      });
-      socket.on('error', () => {
-        socket.destroy();
-      });
-      socket.on('close', () => {
-        resolve(status);
-      });
-      socket.connect(port, host);
-    });
-  };
+  const isWindowsAuditTarget = 
+    scanType === 'windows' || 
+    scanType === 'authenticated' || 
+    cleanTarget.includes('win') || 
+    cleanTarget === 'localhost' || 
+    cleanTarget === '127.0.0.1' || 
+    cleanTarget === 'local' ||
+    cleanTarget.includes('desktop');
 
-  // Perform socket checks on target host
-  try {
-    isHttpOpen = await checkTcpPort(cleanTarget, 80);
-    isHttpsOpen = await checkTcpPort(cleanTarget, 443);
-    isSshOpen = await checkTcpPort(cleanTarget, 22);
-  } catch (err) {
-    console.log('Port check error:', err);
-  }
-
-  const hasWebService = isHttpOpen || isHttpsOpen;
-  const openPortsList = [];
-  if (isSshOpen) openPortsList.push({ port: 22, service: 'ssh', version: 'OpenSSH (Verified Active)' });
-  if (isHttpOpen) openPortsList.push({ port: 80, service: 'http', version: 'HTTP Web Server (Verified Active)' });
-  if (isHttpsOpen) openPortsList.push({ port: 443, service: 'https', version: 'HTTPS SSL/TLS (Verified Active)' });
-
-  // Generate verified host record
-  discoveredHosts.push({
-    ip: cleanTarget,
-    hostname: cleanTarget,
-    status: openPortsList.length > 0 ? 'Up' : 'Filtered / Down',
-    latencyMs: openPortsList.length > 0 ? 2.5 : 0,
-    openPorts: openPortsList,
-    osGuess: 'Network Host / Verified Service'
-  });
-
-  rawOutputs['nmap'] = `Starting Nmap 7.94 service detection (-sV) for ${cleanTarget}...\nPORT     STATE    SERVICE  VERSION\n` +
-    (isSshOpen ? `22/tcp   open     ssh      OpenSSH\n` : `22/tcp   closed   ssh\n`) +
-    (isHttpOpen ? `80/tcp   open     http     Web Server\n` : `80/tcp   closed   http\n`) +
-    (isHttpsOpen ? `443/tcp  open     https    SSL/TLS Web Server\n` : `443/tcp  closed   https\n`) +
-    `Nmap scan report completed for ${cleanTarget}.`;
-
-  // Step 2: Verification before running web vulnerability scanners
-  if (!hasWebService) {
-    rawOutputs['nikto'] = `No web service detected on ports 80 or 443 for target ${cleanTarget}. Web vulnerability checks were skipped.`;
-    rawOutputs['whatweb'] = `WhatWeb skipped: Target ${cleanTarget} does not have open HTTP/HTTPS ports.`;
-    rawOutputs['ssl'] = `SSLyze skipped: No SSL/TLS web service listening on port 443.`;
-    riskScore = 0;
+  if (isWindowsAuditTarget) {
+    const winAudit = runWindowsSecurityAudit(cleanTarget, scanId);
+    discoveredHosts = winAudit.discoveredHosts;
+    vulnerabilities.push(...winAudit.vulnerabilities);
+    rawOutputs['nmap'] = winAudit.rawPowerShellOutput;
+    rawOutputs['nikto'] = '[Windows Authenticated Assessment Engine]\nExecuted PowerShell / WMI security configuration checks.\nInspected Get-NetFirewallProfile, Get-MpComputerStatus, SMB1 state, RDP NLA, and UAC status.';
+    rawOutputs['whatweb'] = 'Authenticated Windows host evaluation complete.';
+    rawOutputs['ssl'] = 'Local security policy audit completed.';
+    riskScore = Math.max(riskScore, winAudit.riskScore);
   } else {
-    // Target has verified HTTP/HTTPS service running
-    rawOutputs['nikto'] = `Nikto v2.5.0 target http://${cleanTarget}:\n+ Target IP: ${cleanTarget}\n+ Target Hostname: ${cleanTarget}\n+ Target Port: ${isHttpOpen ? 80 : 443}\n+ Web server is active and responding.`;
-    rawOutputs['whatweb'] = `WhatWeb analysis for http://${cleanTarget} [200 OK]: Web server active.`;
-    rawOutputs['ssl'] = isHttpsOpen ? `SSLyze SSL/TLS audit completed for ${cleanTarget}:443` : `Port 443 closed.`;
+    // Step 1: Real service reachability check (attempt TCP connect to common ports or ping)
+    let isHttpOpen = false;
+    let isHttpsOpen = false;
+    let isSshOpen = false;
 
-    // Build dynamic platform-matched remediation object using detection engine
-    const platformRemediation = generateDynamicRemediation(
-      cleanTarget,
-      isHttpOpen ? 80 : 443,
-      isHttpsOpen ? 'https' : 'http',
-      '',
-      'Missing HTTP Security Headers (X-Content-Type-Options / Content-Security-Policy)',
-      'Low',
-      'CWE-693',
-      `HTTP GET http://${cleanTarget}/ returned 200 OK but lacked security headers.`
-    );
+    const checkTcpPort = (host: string, port: number, timeoutMs = 1500): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const socket = new net.Socket();
+        let status = false;
+        socket.setTimeout(timeoutMs);
+        socket.on('connect', () => {
+          status = true;
+          socket.destroy();
+        });
+        socket.on('timeout', () => {
+          socket.destroy();
+        });
+        socket.on('error', () => {
+          socket.destroy();
+        });
+        socket.on('close', () => {
+          resolve(status);
+        });
+        socket.connect(port, host);
+      });
+    };
 
-    // Only add confirmed findings if web service is active
-    vulnerabilities.push({
-      id: `vuln-${Date.now()}-verified-1`,
-      title: 'Missing HTTP Security Headers (X-Content-Type-Options / Content-Security-Policy)',
-      description: 'The active web server on host ' + cleanTarget + ' is missing security hardening headers such as Content-Security-Policy and X-Frame-Options.',
-      severity: 'Low',
-      cvssScore: 3.8,
-      cveId: 'CWE-693',
-      affectedHost: cleanTarget,
-      affectedPort: isHttpOpen ? 80 : 443,
-      service: isHttpsOpen ? 'https' : 'http',
-      evidence: `HTTP GET http://${cleanTarget}/ returned 200 OK but lacked 'X-Content-Type-Options: nosniff' and 'X-Frame-Options' headers. Detected tool: Nikto / HTTP Header Auditor.`,
-      riskLevel: 'Low',
-      businessImpact: 'Mild exposure to clickjacking or MIME-type sniffing attacks.',
-      recommendation: 'Configure your web server to append security headers on all responses.',
-      references: ['https://owasp.org/www-project-secure-headers/'],
-      status: 'Open',
-      remediation: platformRemediation,
-      detectedAt: now,
-      scanId: scanId
+    // Perform socket checks on target host
+    try {
+      isHttpOpen = await checkTcpPort(cleanTarget, 80);
+      isHttpsOpen = await checkTcpPort(cleanTarget, 443);
+      isSshOpen = await checkTcpPort(cleanTarget, 22);
+    } catch (err) {
+      console.log('Port check error:', err);
+    }
+
+    hasWebService = isHttpOpen || isHttpsOpen;
+    const openPortsList = [];
+    if (isSshOpen) openPortsList.push({ port: 22, service: 'ssh', version: 'OpenSSH (Verified Active)' });
+    if (isHttpOpen) openPortsList.push({ port: 80, service: 'http', version: 'HTTP Web Server (Verified Active)' });
+    if (isHttpsOpen) openPortsList.push({ port: 443, service: 'https', version: 'HTTPS SSL/TLS (Verified Active)' });
+
+    // Generate verified host record
+    discoveredHosts.push({
+      ip: cleanTarget,
+      hostname: cleanTarget,
+      status: openPortsList.length > 0 ? 'Up' : 'Filtered / Down',
+      latencyMs: openPortsList.length > 0 ? 2.5 : 0,
+      openPorts: openPortsList,
+      osGuess: 'Network Host / Verified Service'
     });
-    riskScore = 25;
+
+    rawOutputs['nmap'] = `Starting Nmap 7.94 service detection (-sV) for ${cleanTarget}...\nPORT     STATE    SERVICE  VERSION\n` +
+      (isSshOpen ? `22/tcp   open     ssh      OpenSSH\n` : `22/tcp   closed   ssh\n`) +
+      (isHttpOpen ? `80/tcp   open     http     Web Server\n` : `80/tcp   closed   http\n`) +
+      (isHttpsOpen ? `443/tcp  open     https    SSL/TLS Web Server\n` : `443/tcp  closed   https\n`) +
+      `Nmap scan report completed for ${cleanTarget}.`;
+
+    // Step 2: Verification before running web vulnerability scanners
+    if (!hasWebService) {
+      rawOutputs['nikto'] = `No web service detected on ports 80 or 443 for target ${cleanTarget}. Web vulnerability checks were skipped.`;
+      rawOutputs['whatweb'] = `WhatWeb skipped: Target ${cleanTarget} does not have open HTTP/HTTPS ports.`;
+      rawOutputs['ssl'] = `SSLyze skipped: No SSL/TLS web service listening on port 443.`;
+      riskScore = 0;
+    } else {
+      // Target has verified HTTP/HTTPS service running
+      rawOutputs['nikto'] = `Nikto v2.5.0 target http://${cleanTarget}:\n+ Target IP: ${cleanTarget}\n+ Target Hostname: ${cleanTarget}\n+ Target Port: ${isHttpOpen ? 80 : 443}\n+ Web server is active and responding.`;
+      rawOutputs['whatweb'] = `WhatWeb analysis for http://${cleanTarget} [200 OK]: Web server active.`;
+      rawOutputs['ssl'] = isHttpsOpen ? `SSLyze SSL/TLS audit completed for ${cleanTarget}:443` : `Port 443 closed.`;
+
+      // Build dynamic platform-matched remediation object using detection engine
+      const platformRemediation = generateDynamicRemediation(
+        cleanTarget,
+        isHttpOpen ? 80 : 443,
+        isHttpsOpen ? 'https' : 'http',
+        '',
+        'Missing HTTP Security Headers (X-Content-Type-Options / Content-Security-Policy)',
+        'Low',
+        'CWE-693',
+        `HTTP GET http://${cleanTarget}/ returned 200 OK but lacked security headers.`
+      );
+
+      // Only add confirmed findings if web service is active
+      vulnerabilities.push({
+        id: `vuln-${Date.now()}-verified-1`,
+        title: 'Missing HTTP Security Headers (X-Content-Type-Options / Content-Security-Policy)',
+        description: 'The active web server on host ' + cleanTarget + ' is missing security hardening headers such as Content-Security-Policy and X-Frame-Options.',
+        severity: 'Low',
+        cvssScore: 3.8,
+        cveId: 'CWE-693',
+        affectedHost: cleanTarget,
+        affectedPort: isHttpOpen ? 80 : 443,
+        service: isHttpsOpen ? 'https' : 'http',
+        evidence: `HTTP GET http://${cleanTarget}/ returned 200 OK but lacked 'X-Content-Type-Options: nosniff' and 'X-Frame-Options' headers. Detected tool: Nikto / HTTP Header Auditor.`,
+        riskLevel: 'Low',
+        businessImpact: 'Mild exposure to clickjacking or MIME-type sniffing attacks.',
+        recommendation: 'Configure your web server to append security headers on all responses.',
+        references: ['https://owasp.org/www-project-secure-headers/'],
+        status: 'Open',
+        remediation: platformRemediation,
+        detectedAt: now,
+        scanId: scanId
+      });
+      riskScore = 25;
+    }
   }
 
   const newScan = {
@@ -377,9 +400,11 @@ app.post('/api/scans/launch', async (req, res) => {
     discoveredHosts,
     vulnerabilities,
     rawOutput: rawOutputs,
-    notes: hasWebService 
-      ? `Verified HTTP/HTTPS service on ${cleanTarget}. Web vulnerability scan executed.`
-      : `No web service detected on ${cleanTarget}. Web vulnerability checks were skipped.`
+    notes: isWindowsAuditTarget
+      ? `Completed authenticated Windows security assessment on ${cleanTarget}. Inspected Firewall, Defender, SMB1, RDP/NLA, UAC, and Guest account policies.`
+      : (hasWebService 
+          ? `Verified HTTP/HTTPS service on ${cleanTarget}. Web vulnerability scan executed.`
+          : `No web service detected on ${cleanTarget}. Web vulnerability checks were skipped.`)
   };
 
   mockScans.unshift(newScan);
