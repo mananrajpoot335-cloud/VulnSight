@@ -1,0 +1,6 @@
+{
+  "name": "VulnSight",
+  "description": "AI-Powered Vulnerability Assessment & Remediation Management Platform",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
