@@ -144,12 +144,15 @@ export interface DiscoveredHost {
 export interface DomainInfo {
   domainName?: string;
   registeredDomain?: string;
+  registry?: string;
   registrar?: string;
   registrationDate?: string;
   expirationDate?: string;
   lastUpdatedDate?: string;
   domainStatus?: string;
   nameServers?: string[];
+  authoritativeNameServers?: string[];
+  registryNameServers?: string[];
   dnssecStatus?: string;
   whoisRaw?: string;
   registrantCountry?: string;
@@ -172,6 +175,8 @@ export interface IpInformation {
   publicIp?: string;
   reverseDns?: string;
   asnNumber?: string;
+  ipNetworkRange?: string;
+  cidr?: string;
   hostingProvider?: string;
   organization?: string;
   country?: string;

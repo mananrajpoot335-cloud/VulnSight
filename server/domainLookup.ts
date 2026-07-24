@@ -57,18 +57,27 @@ async function performWhoisQuery(domain: string): Promise<{ rawText: string; par
       }
     }
 
+    // Check for ccTLD Registry specifics (e.g., .pk)
+    if (domain.toLowerCase().endsWith('.pk')) {
+      parsed.registry = 'PKNIC (Pakistan Network Information Center)';
+    }
+
+    // Parse Registry
+    const registryMatch = raw.match(/(?:Registry|Registry Name|Registry Operator|Registry ID):\s*(.+)/i);
+    if (registryMatch && !parsed.registry) parsed.registry = registryMatch[1].trim();
+
     // Parse Registrar
-    const registrarMatch = raw.match(/(?:Registrar|Sponsoring Registrar|Registrar Name):\s*(.+)/i);
+    const registrarMatch = raw.match(/(?:Registrar|Sponsoring Registrar|Registrar Name|Registrar Organization):\s*(.+)/i);
     if (registrarMatch) parsed.registrar = registrarMatch[1].trim();
 
     // Parse Dates
-    const creationMatch = raw.match(/(?:Creation Date|Created On|Registered On|Registration Time):\s*(.+)/i);
+    const creationMatch = raw.match(/(?:Creation Date|Created On|Registered On|Registration Time|Created Date|Created):\s*(.+)/i);
     if (creationMatch) parsed.registrationDate = creationMatch[1].trim();
 
-    const expiryMatch = raw.match(/(?:Registry Expiry Date|Expiration Date|Expires On|paid-till):\s*(.+)/i);
+    const expiryMatch = raw.match(/(?:Registry Expiry Date|Expiration Date|Expires On|paid-till|Expiry Date|Expires):\s*(.+)/i);
     if (expiryMatch) parsed.expirationDate = expiryMatch[1].trim();
 
-    const updatedMatch = raw.match(/(?:Updated Date|Last Updated On|Changed):\s*(.+)/i);
+    const updatedMatch = raw.match(/(?:Updated Date|Last Updated On|Changed|Last Updated):\s*(.+)/i);
     if (updatedMatch) parsed.lastUpdatedDate = updatedMatch[1].trim();
 
     // Parse Status
@@ -80,7 +89,8 @@ async function performWhoisQuery(domain: string): Promise<{ rawText: string; par
     // Parse Nameservers
     const nsMatches = raw.match(/(?:Name Server|nserver|NS):\s*([^\s]+)/gi);
     if (nsMatches) {
-      parsed.nameServers = Array.from(new Set(nsMatches.map(s => s.replace(/(?:Name Server|nserver|NS):\s*/i, '').trim().toLowerCase())));
+      parsed.registryNameServers = Array.from(new Set(nsMatches.map(s => s.replace(/(?:Name Server|nserver|NS):\s*/i, '').trim().toLowerCase())));
+      parsed.nameServers = parsed.registryNameServers;
     }
 
     // Parse Country
@@ -291,9 +301,9 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
     const ns = await dns.resolveNs(cleanTarget);
     if (ns && ns.length > 0) {
       dnsRecords.nsRecords = ns;
-      domainInfo.nameServers = ns;
-      dnsLogLines.push(`[NS Records]\n${ns.join('\n')}`);
-      console.log(`[DNS] Success. Resolved NS records:`, ns);
+      domainInfo.authoritativeNameServers = ns;
+      dnsLogLines.push(`[NS Records (Authoritative DNS)]\n${ns.join('\n')}`);
+      console.log(`[DNS] Success. Resolved Authoritative NS records:`, ns);
     }
   } catch (err: any) {
     console.log(`[DNS] NS records failed/none:`, err.message || String(err));
@@ -424,13 +434,25 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
       domainInfo.domainName = domainRdap.ldhName || cleanTarget;
       domainInfo.registeredDomain = domainRdap.handle || cleanTarget;
 
-      // Entities (Registrar)
+      // Special ccTLD Registry Detection (e.g., .pk)
+      if (cleanTarget.toLowerCase().endsWith('.pk')) {
+        domainInfo.registry = 'PKNIC (Pakistan Network Information Center)';
+      }
+
+      // Entities (Registrar & Registry)
       if (Array.isArray(domainRdap.entities)) {
         const registrarEntity = domainRdap.entities.find((e: any) => 
           Array.isArray(e.roles) && e.roles.includes('registrar')
         );
         if (registrarEntity) {
           domainInfo.registrar = registrarEntity.vcardArray?.[1]?.find((v: any) => v[0] === 'fn')?.[3] || registrarEntity.handle;
+        }
+
+        const registryEntity = domainRdap.entities.find((e: any) => 
+          Array.isArray(e.roles) && e.roles.includes('registry')
+        );
+        if (registryEntity) {
+          domainInfo.registry = registryEntity.vcardArray?.[1]?.find((v: any) => v[0] === 'fn')?.[3] || registryEntity.handle;
         }
       }
 
@@ -448,10 +470,10 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         domainInfo.domainStatus = domainRdap.status.join(', ');
       }
 
-      // Nameservers
+      // Registry Root Nameservers
       if (Array.isArray(domainRdap.nameservers)) {
         const nsList = domainRdap.nameservers.map((n: any) => n.ldhName).filter(Boolean);
-        if (nsList.length > 0) domainInfo.nameServers = nsList;
+        if (nsList.length > 0) domainInfo.registryNameServers = nsList;
       }
 
       // DNSSEC
@@ -470,21 +492,31 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
     whoisLogLines.push(`RDAP Domain Query Exception: ${err.message || String(err)}`);
   }
 
-  // TCP WHOIS Fallback if RDAP was unsuccessful or missing registrar
-  if (!rdapSuccess || !domainInfo.registrar) {
+  // TCP WHOIS Fallback if RDAP was unsuccessful or missing registrar/registry
+  if (!rdapSuccess || !domainInfo.registrar || !domainInfo.registry) {
     console.log(`[WHOIS Fallback] Running TCP WHOIS fallback for "${cleanTarget}"...`);
     const whoisResult = await performWhoisQuery(cleanTarget);
     whoisLogLines.push(`\n--- TCP WHOIS Fallback Output ---\n` + whoisResult.rawText);
 
-    if (whoisResult.parsed.registrar) domainInfo.registrar = whoisResult.parsed.registrar;
-    if (whoisResult.parsed.registrationDate) domainInfo.registrationDate = whoisResult.parsed.registrationDate;
-    if (whoisResult.parsed.expirationDate) domainInfo.expirationDate = whoisResult.parsed.expirationDate;
-    if (whoisResult.parsed.lastUpdatedDate) domainInfo.lastUpdatedDate = whoisResult.parsed.lastUpdatedDate;
-    if (whoisResult.parsed.domainStatus) domainInfo.domainStatus = whoisResult.parsed.domainStatus;
-    if (whoisResult.parsed.nameServers && whoisResult.parsed.nameServers.length > 0) {
-      domainInfo.nameServers = whoisResult.parsed.nameServers;
+    if (whoisResult.parsed.registry && !domainInfo.registry) domainInfo.registry = whoisResult.parsed.registry;
+    if (whoisResult.parsed.registrar && !domainInfo.registrar) domainInfo.registrar = whoisResult.parsed.registrar;
+    if (whoisResult.parsed.registrationDate && !domainInfo.registrationDate) domainInfo.registrationDate = whoisResult.parsed.registrationDate;
+    if (whoisResult.parsed.expirationDate && !domainInfo.expirationDate) domainInfo.expirationDate = whoisResult.parsed.expirationDate;
+    if (whoisResult.parsed.lastUpdatedDate && !domainInfo.lastUpdatedDate) domainInfo.lastUpdatedDate = whoisResult.parsed.lastUpdatedDate;
+    if (whoisResult.parsed.domainStatus && !domainInfo.domainStatus) domainInfo.domainStatus = whoisResult.parsed.domainStatus;
+    if (whoisResult.parsed.registryNameServers && whoisResult.parsed.registryNameServers.length > 0) {
+      domainInfo.registryNameServers = whoisResult.parsed.registryNameServers;
     }
-    if (whoisResult.parsed.registrantCountry) domainInfo.registrantCountry = whoisResult.parsed.registrantCountry;
+    if (whoisResult.parsed.registrantCountry && !domainInfo.registrantCountry) domainInfo.registrantCountry = whoisResult.parsed.registrantCountry;
+  }
+
+  // Combine Name Servers cleanly
+  const allNs = Array.from(new Set([
+    ...(domainInfo.authoritativeNameServers || []),
+    ...(domainInfo.registryNameServers || [])
+  ]));
+  if (allNs.length > 0) {
+    domainInfo.nameServers = allNs;
   }
 
   // Ensure default domainName & registeredDomain
@@ -505,7 +537,41 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         const ipRdap: any = await ipRdapRes.json();
         whoisLogLines.push(JSON.stringify(ipRdap, null, 2));
 
-        ipInfo.asnNumber = ipRdap.asn || ipRdap.handle || 'ASN Resolved';
+        // 1. Parse ASN accurately (Must not be IP range or handle like NET-104-21)
+        let asnVal: string | undefined = undefined;
+        if (typeof ipRdap.asn === 'number' || typeof ipRdap.asn === 'string') {
+          asnVal = String(ipRdap.asn);
+        } else if (typeof ipRdap.autnum === 'number' || typeof ipRdap.autnum === 'string') {
+          asnVal = String(ipRdap.autnum);
+        } else if (typeof ipRdap.handle === 'string' && /^AS\d+/i.test(ipRdap.handle)) {
+          asnVal = ipRdap.handle;
+        }
+
+        if (asnVal) {
+          asnVal = asnVal.toUpperCase().trim();
+          if (!asnVal.startsWith('AS')) {
+            asnVal = `AS${asnVal}`;
+          }
+          ipInfo.asnNumber = asnVal;
+        }
+
+        // 2. Parse CIDR separately
+        if (Array.isArray(ipRdap.cidr0_cidrs) && ipRdap.cidr0_cidrs.length > 0) {
+          const c0 = ipRdap.cidr0_cidrs[0];
+          if (c0.v4prefix && c0.length !== undefined) {
+            ipInfo.cidr = `${c0.v4prefix}/${c0.length}`;
+          } else if (c0.v6prefix && c0.length !== undefined) {
+            ipInfo.cidr = `${c0.v6prefix}/${c0.length}`;
+          }
+        }
+
+        // 3. Parse IP Network Range separately
+        if (ipRdap.startAddress && ipRdap.endAddress) {
+          ipInfo.ipNetworkRange = `${ipRdap.startAddress} - ${ipRdap.endAddress}`;
+        } else if (ipRdap.handle && !ipRdap.handle.startsWith('AS')) {
+          ipInfo.ipNetworkRange = ipRdap.handle;
+        }
+
         ipInfo.hostingProvider = ipRdap.name || ipRdap.type || 'Hosting Provider';
         ipInfo.organization = ipRdap.org || ipRdap.name || 'Organization Resolved';
         ipInfo.country = ipRdap.country || 'Country Resolved';

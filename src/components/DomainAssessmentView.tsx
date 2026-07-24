@@ -78,6 +78,11 @@ export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan
             </div>
 
             <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 space-y-0.5">
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">Registry</div>
+              <div className="text-[#38bdf8] font-medium">{val(domainInfo?.registry)}</div>
+            </div>
+
+            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 space-y-0.5">
               <div className="text-[10px] text-[#64748b] uppercase font-bold">Registrar</div>
               <div className="text-[#cbd5e1]">{val(domainInfo?.registrar)}</div>
             </div>
@@ -107,14 +112,19 @@ export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan
               <div className="text-[#cbd5e1]">{val(domainInfo?.dnssecStatus)}</div>
             </div>
 
-            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 col-span-2 space-y-0.5">
-              <div className="text-[10px] text-[#64748b] uppercase font-bold">Name Servers</div>
-              <div className="font-mono text-[#38bdf8]">{val(domainInfo?.nameServers)}</div>
+            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 space-y-0.5">
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">Registrant Country</div>
+              <div className="text-[#cbd5e1]">{val(domainInfo?.registrantCountry)}</div>
             </div>
 
             <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 col-span-2 space-y-0.5">
-              <div className="text-[10px] text-[#64748b] uppercase font-bold">Registrant Country</div>
-              <div className="text-[#cbd5e1]">{val(domainInfo?.registrantCountry)}</div>
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">Authoritative Name Servers (DNS)</div>
+              <div className="font-mono text-[#38bdf8]">{val(domainInfo?.authoritativeNameServers || dnsRecords?.nsRecords)}</div>
+            </div>
+
+            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 col-span-2 space-y-0.5">
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">Registry Root Name Servers (RDAP / WHOIS)</div>
+              <div className="font-mono text-[#38bdf8]">{val(domainInfo?.registryNameServers)}</div>
             </div>
           </div>
         </div>
@@ -184,7 +194,17 @@ export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan
 
             <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 space-y-0.5">
               <div className="text-[10px] text-[#64748b] uppercase font-bold">ASN Number</div>
-              <div className="font-mono text-[#cbd5e1]">{val(ipInfo?.asnNumber)}</div>
+              <div className="font-mono text-[#38bdf8] font-bold">{val(ipInfo?.asnNumber)}</div>
+            </div>
+
+            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 space-y-0.5">
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">CIDR Notation</div>
+              <div className="font-mono text-[#cbd5e1]">{val(ipInfo?.cidr)}</div>
+            </div>
+
+            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 col-span-2 space-y-0.5">
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">IP Network Range</div>
+              <div className="font-mono text-[#cbd5e1]">{val(ipInfo?.ipNetworkRange)}</div>
             </div>
 
             <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 space-y-0.5">
