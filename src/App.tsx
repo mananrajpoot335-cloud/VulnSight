@@ -17,6 +17,7 @@ import { AssetInventory } from './components/AssetInventory';
 import { ReportGenerator } from './components/ReportGenerator';
 import { VulnerabilityDetailModal } from './components/VulnerabilityDetailModal';
 import { DeveloperDiagnostics } from './components/DeveloperDiagnostics';
+import { DomainAssessmentView } from './components/DomainAssessmentView';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -294,6 +295,21 @@ export default function App() {
             </button>
 
             <button
+              id="nav-domain-recon"
+              onClick={() => setActiveTab('domain-recon')}
+              className={`w-full flex items-center justify-between px-3 py-2.5 transition-all text-xs ${
+                activeTab === 'domain-recon' 
+                  ? 'bg-[#3b82f6]/10 text-[#3b82f6] font-semibold border-r-[3px] border-[#3b82f6]' 
+                  : 'text-[#94a3b8] hover:text-[#f8fafc] hover:bg-[#1e293b]/60'
+              }`}
+            >
+              <div className="flex items-center space-x-3">
+                <Search className="w-4 h-4 text-[#38bdf8]" />
+                <span>Domain Reconnaissance</span>
+              </div>
+            </button>
+
+            <button
               id="nav-vulnerabilities"
               onClick={() => setActiveTab('vulnerabilities')}
               className={`w-full flex items-center justify-between px-3 py-2.5 transition-all text-xs ${
@@ -414,6 +430,7 @@ export default function App() {
             <h2 className="text-sm font-bold text-[#f8fafc] uppercase tracking-wider">
               {activeTab === 'dashboard' && 'Dashboard Overview'}
               {activeTab === 'scans' && 'Vulnerability Scan Engine'}
+              {activeTab === 'domain-recon' && 'Domain Reconnaissance & Assessment'}
               {activeTab === 'vulnerabilities' && 'Vulnerability Management Matrix'}
               {activeTab === 'assets' && 'Asset & Host Inventory'}
               {activeTab === 'reports' && 'Executive Security Reports'}
@@ -474,6 +491,26 @@ export default function App() {
               scans={scans}
               onDeleteScan={handleDeleteScan}
             />
+          )}
+
+          {activeTab === 'domain-recon' && (
+            <div className="space-y-6">
+              {scans.length === 0 ? (
+                <div className="bg-[#1e293b] border border-[#334155] rounded-xl p-8 text-center text-[#94a3b8] space-y-3">
+                  <Search className="w-8 h-8 text-[#38bdf8] mx-auto" />
+                  <div className="font-bold text-sm text-white">No Domain Assessments Found</div>
+                  <p className="text-xs">Launch a domain or IP security scan in the Scan Console to inspect WHOIS, DNS records, IP intelligence, and technology stacks.</p>
+                  <button
+                    onClick={() => setActiveTab('scans')}
+                    className="bg-[#3b82f6] hover:bg-blue-600 text-white font-semibold text-xs px-4 py-2 rounded-md shadow inline-block"
+                  >
+                    Go to Scan Console →
+                  </button>
+                </div>
+              ) : (
+                <DomainAssessmentView scan={scans[0]} />
+              )}
+            </div>
           )}
 
           {activeTab === 'vulnerabilities' && (

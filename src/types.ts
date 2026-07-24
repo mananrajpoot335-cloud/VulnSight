@@ -141,6 +141,89 @@ export interface DiscoveredHost {
   osGuess?: string;
 }
 
+export interface DomainInfo {
+  domainName?: string;
+  registeredDomain?: string;
+  registrar?: string;
+  registrationDate?: string;
+  expirationDate?: string;
+  lastUpdatedDate?: string;
+  domainStatus?: string;
+  nameServers?: string[];
+  dnssecStatus?: string;
+  whoisRaw?: string;
+  registrantCountry?: string;
+}
+
+export interface DnsRecordDetails {
+  aRecords?: string[];
+  aaaaRecords?: string[];
+  mxRecords?: string[];
+  nsRecords?: string[];
+  txtRecords?: string[];
+  spfRecord?: string;
+  dmarcRecord?: string;
+  dkimStatus?: string;
+  cnameRecords?: string[];
+  soaRecord?: string;
+}
+
+export interface IpInformation {
+  publicIp?: string;
+  reverseDns?: string;
+  asnNumber?: string;
+  hostingProvider?: string;
+  organization?: string;
+  country?: string;
+  city?: string;
+  cdnDetected?: string;
+}
+
+export interface WebServerDetails {
+  webServer?: string;
+  framework?: string;
+  programmingLanguage?: string;
+  cmsDetected?: string;
+  techStack?: string[];
+  httpHeaders?: Record<string, string>;
+  securityHeaders?: { header: string; status: 'Present' | 'Missing' | 'Insecure'; value?: string }[];
+  cookieSecurity?: string;
+  compression?: string;
+  httpMethods?: string[];
+  robotsTxt?: string;
+  sitemapXml?: string;
+}
+
+export interface SslCertificateDetails {
+  issuer?: string;
+  subject?: string;
+  san?: string[];
+  expiryDate?: string;
+  tlsVersions?: string[];
+  weakCiphers?: string[];
+  certificateChain?: string;
+  hstsStatus?: string;
+  ocspStatus?: string;
+  heartbleedStatus?: string;
+}
+
+export interface EmailSecurityDetails {
+  spfRecord?: string;
+  dkimStatus?: string;
+  dmarcRecord?: string;
+  mxValidation?: string;
+  openRelayStatus?: string;
+}
+
+export interface DomainAssessmentData {
+  domainInfo?: DomainInfo;
+  dnsRecords?: DnsRecordDetails;
+  ipInfo?: IpInformation;
+  webServer?: WebServerDetails;
+  sslDetails?: SslCertificateDetails;
+  emailSecurity?: EmailSecurityDetails;
+}
+
 export interface ScanResult {
   id: string;
   name: string;
@@ -166,6 +249,7 @@ export interface ScanResult {
     httpHeader?: string;
   };
   diagnostics?: ScanDiagnostics;
+  domainAssessment?: DomainAssessmentData;
   notes?: string;
 }
 
