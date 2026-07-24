@@ -519,7 +519,7 @@ app.post('/api/scans/launch', async (req, res) => {
   // MODULE 7: Authenticated Windows Audit
   // -------------------------------------------------------------------------
   console.log('[Module 7: Authenticated Windows Audit] Running Windows Security Audit...');
-  const winAudit = runWindowsSecurityAudit(cleanTarget, scanId, isLocalHost);
+  const winAudit = await runWindowsSecurityAudit(cleanTarget, scanId, isLocalHost);
 
   vulnerabilities.push(...winAudit.vulnerabilities);
   moduleExecutionLogs.push(winAudit.executionLog);

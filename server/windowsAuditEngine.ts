@@ -1,3 +1,4 @@
+import net from 'net';
 import { execSync } from 'child_process';
 import { Vulnerability, ModuleExecutionLog } from '../src/types.js';
 
@@ -12,15 +13,44 @@ export interface WindowsAuditResult {
   executionLog: ModuleExecutionLog;
 }
 
-export function runWindowsSecurityAudit(
+/**
+ * Socket-based TCP Port Check
+ */
+export async function checkTcpPort(host: string, port: number, timeoutMs = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(timeoutMs);
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.on('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+}
+
+/**
+ * Host Discovery Probe
+ */
+export async function isHostAlive(target: string, timeoutMs = 2000): Promise<boolean> {
+  const probePorts = [80, 443, 135, 445, 3389, 22, 5985, 5986, 8080];
+  const results = await Promise.all(probePorts.map(p => checkTcpPort(target, p, timeoutMs)));
+  return results.some(r => r === true);
+}
+
+export async function runWindowsSecurityAudit(
   target: string, 
   scanId: string, 
   isLocalHost: boolean
-): WindowsAuditResult {
+): Promise<WindowsAuditResult> {
   const now = new Date().toISOString();
-
-  console.log('[Windows Audit] Starting...');
-  console.log(`[Windows Audit] Target Host: ${target} | Is Local Host: ${isLocalHost}`);
 
   let rawLogs = `[Authenticated Windows Security Assessment Engine]\n`;
   rawLogs += `Target Host: ${target} | Execution Mode: ${isLocalHost ? 'Local Host Audit' : 'Remote Target Assessment'}\n`;
@@ -29,64 +59,157 @@ export function runWindowsSecurityAudit(
   const vulnerabilities: Vulnerability[] = [];
 
   // =========================================================================
-  // CASE 1: REMOTE TARGET HOST (e.g. 192.168.16.190)
-  // Do NOT execute local server PowerShell commands for remote hosts!
+  // CASE 1: REMOTE TARGET HOST
+  // Strict Enterprise Scanner Flow: Host Discovery -> Port Detection -> Decision
   // =========================================================================
   if (!isLocalHost) {
-    console.log(`[Windows Audit] Remote target detected (${target}). Checking remote WinRM / WMI authenticated access...`);
-    
-    rawLogs += `[Remote Target Assessment]\n`;
-    rawLogs += `Evaluating authenticated WinRM / WMI / SMB management endpoints on ${target}...\n`;
-    rawLogs += `Checking TCP Ports 5985 (WinRM HTTP), 5986 (WinRM HTTPS), 135 (WMI/RPC), 445 (SMB)...\n\n`;
+    // -----------------------------------------------------------------------
+    // STEP 1: Host Discovery
+    // -----------------------------------------------------------------------
+    const alive = await isHostAlive(target);
+    if (!alive) {
+      console.log('[Windows Audit]');
+      console.log(`Host Discovery: Target ${target} is unreachable.`);
+      console.log('Result:');
+      console.log('Authenticated assessment skipped.');
+      console.log('Reason:');
+      console.log('Host unreachable.');
 
-    // Remote WinRM / WMI authentication check
-    let remoteWinRmEstablished = false;
-    let remotePsOutput = '';
-
-    if (process.platform === 'win32') {
-      try {
-        console.log(`[Windows Audit] Attempting WinRM remote command execution to ${target}...`);
-        // Test WinRM remote script execution if target host is configured
-        remotePsOutput = execSync(
-          `powershell.exe -NoProfile -Command "Invoke-Command -ComputerName ${target} -ScriptBlock { Get-NetFirewallProfile } -ErrorAction Stop"`,
-          { timeout: 3000, encoding: 'utf-8' }
-        );
-        remoteWinRmEstablished = true;
-        rawLogs += `[WinRM Remote Session Established]\n${remotePsOutput}\n`;
-      } catch (err: any) {
-        console.log(`[Windows Audit] WinRM remote session connection failed or unauthenticated for ${target}: ${err.message || 'Connection refused / Auth required'}`);
-        rawLogs += `[WinRM Remote Connection Note]: Could not establish authenticated WinRM session to ${target}.\n`;
-        rawLogs += `Error: ${err.message || 'WinRM/WMI port unauthenticated or credentials missing'}\n`;
-      }
-    }
-
-    if (!remoteWinRmEstablished) {
-      const unavailableMsg = "Authenticated assessment is not available for this host. Only network-based assessment was performed.";
-      console.log(`[Windows Audit] ${unavailableMsg}`);
-      
-      rawLogs += `\n==================================================\n`;
-      rawLogs += `STATUS: ${unavailableMsg}\n`;
-      rawLogs += `==================================================\n`;
+      rawLogs += `[STEP 1 - Host Discovery]: Target ${target} is unreachable / offline.\n`;
+      rawLogs += `Result: Authenticated assessment skipped.\nReason: Host unreachable.\n`;
 
       return {
-        isWindowsTarget: true,
+        isWindowsTarget: false,
         authenticatedAvailable: false,
-        statusMessage: unavailableMsg,
+        statusMessage: `Host ${target} is unreachable. Windows Audit skipped.`,
         discoveredHosts: [],
-        vulnerabilities: [], // NEVER generate local server Windows findings for remote hosts!
+        vulnerabilities: [],
         rawPowerShellOutput: rawLogs,
         riskScore: 0,
         executionLog: {
           moduleName: 'Authenticated Windows Audit',
           status: 'Skipped',
-          reason: unavailableMsg,
+          reason: 'Host unreachable.',
+          commandsRun: [`tcp_connect_probe ${target}`],
+          hostExecutedOn: `Remote Host (${target})`,
+          rawOutput: rawLogs,
+          parsedSummary: `Target ${target} is unreachable. Authenticated Windows Audit skipped.`,
+          findingsCount: 0
+        }
+      };
+    }
+
+    // -----------------------------------------------------------------------
+    // STEP 2: Port Detection (TCP 5985 & TCP 5986)
+    // -----------------------------------------------------------------------
+    console.log('[Windows Audit]');
+    console.log('Checking WinRM ports...');
+    const port5985Open = await checkTcpPort(target, 5985, 2000);
+    const port5986Open = await checkTcpPort(target, 5986, 2000);
+
+    console.log(`5985 ${port5985Open ? 'OPEN' : 'CLOSED'}`);
+    console.log(`5986 ${port5986Open ? 'OPEN' : 'CLOSED'}`);
+
+    rawLogs += `[STEP 2 - Port Detection]\n`;
+    rawLogs += `TCP 5985 (WinRM HTTP): ${port5985Open ? 'OPEN' : 'CLOSED'}\n`;
+    rawLogs += `TCP 5986 (WinRM HTTPS): ${port5986Open ? 'OPEN' : 'CLOSED'}\n`;
+
+    // -----------------------------------------------------------------------
+    // STEP 3: Decision - IF BOTH PORTS ARE CLOSED
+    // DO NOT EXECUTE Invoke-Command, PowerShell Remoting, WMI, or CIM!
+    // -----------------------------------------------------------------------
+    if (!port5985Open && !port5986Open) {
+      console.log('Result:');
+      console.log('Authenticated assessment skipped.');
+      console.log('Reason:');
+      console.log('WinRM unavailable.');
+
+      const skipReason = "WinRM service unavailable. No authentication channel exists.";
+
+      rawLogs += `\n[STEP 3 - Decision]\nBoth WinRM ports (5985, 5986) are CLOSED.\nNo remote commands or authentication attempts were made.\n`;
+      rawLogs += `Result: Authenticated assessment skipped.\nReason: ${skipReason}\n`;
+
+      return {
+        isWindowsTarget: false,
+        authenticatedAvailable: false,
+        statusMessage: skipReason,
+        discoveredHosts: [],
+        vulnerabilities: [],
+        rawPowerShellOutput: rawLogs,
+        riskScore: 0,
+        executionLog: {
+          moduleName: 'Authenticated Windows Audit',
+          status: 'Skipped',
+          reason: skipReason,
           commandsRun: [
-            `Test-NetConnection -ComputerName ${target} -Port 5985 (WinRM)`,
-            `Invoke-Command -ComputerName ${target} -ScriptBlock { Get-NetFirewallProfile }`
+            `Test-NetConnection -ComputerName ${target} -Port 5985`,
+            `Test-NetConnection -ComputerName ${target} -Port 5986`
           ],
           hostExecutedOn: `Remote Host (${target})`,
           rawOutput: rawLogs,
-          parsedSummary: unavailableMsg,
+          parsedSummary: `WinRM ports 5985/5986 closed. ${skipReason}`,
+          findingsCount: 0
+        }
+      };
+    }
+
+    // -----------------------------------------------------------------------
+    // STEP 4: IF PORT IS OPEN -> Verify WinRM Handshake & Authentication
+    // Only after successful authentication execute Get-NetFirewallProfile, etc.
+    // -----------------------------------------------------------------------
+    console.log(`[Windows Audit] WinRM port open on ${target}. Verifying WinRM handshake and authentication...`);
+    rawLogs += `\n[STEP 4 - WinRM Handshake & Authentication]\n`;
+    rawLogs += `WinRM port open. Verifying credentials and WinRM session channel...\n`;
+
+    let remoteWinRmEstablished = false;
+    let remotePsOutput = '';
+
+    if (process.platform === 'win32') {
+      try {
+        remotePsOutput = execSync(
+          `powershell.exe -NoProfile -Command "Invoke-Command -ComputerName ${target} -ScriptBlock { Get-NetFirewallProfile } -ErrorAction Stop"`,
+          { timeout: 5000, encoding: 'utf-8' }
+        );
+        remoteWinRmEstablished = true;
+        rawLogs += `[WinRM Remote Session Established]\n${remotePsOutput}\n`;
+      } catch (err: any) {
+        console.log(`[Windows Audit] WinRM authentication failed for ${target}: ${err.message || 'Auth required'}`);
+        rawLogs += `[WinRM Auth Error]: Could not establish authenticated WinRM session to ${target}.\n`;
+        rawLogs += `Error: ${err.message || 'WinRM port open but authentication failed'}\n`;
+      }
+    } else {
+      console.log(`[Windows Audit] WinRM port is open on ${target}, but local server platform is ${process.platform}.`);
+      rawLogs += `[Note]: WinRM port open on ${target}, but local server is ${process.platform}. WinRM session requires Windows environment/credentials.\n`;
+    }
+
+    if (!remoteWinRmEstablished) {
+      const authFailedMsg = "WinRM service unavailable. No authentication channel exists.";
+      console.log('Result:');
+      console.log('Authenticated assessment skipped.');
+      console.log('Reason:');
+      console.log('WinRM unavailable.');
+
+      rawLogs += `\nResult: Authenticated assessment skipped.\nReason: ${authFailedMsg}\n`;
+
+      return {
+        isWindowsTarget: true,
+        authenticatedAvailable: false,
+        statusMessage: authFailedMsg,
+        discoveredHosts: [],
+        vulnerabilities: [],
+        rawPowerShellOutput: rawLogs,
+        riskScore: 0,
+        executionLog: {
+          moduleName: 'Authenticated Windows Audit',
+          status: 'Skipped',
+          reason: authFailedMsg,
+          commandsRun: [
+            `Test-NetConnection -ComputerName ${target} -Port 5985`,
+            `Test-NetConnection -ComputerName ${target} -Port 5986`
+          ],
+          hostExecutedOn: `Remote Host (${target})`,
+          rawOutput: rawLogs,
+          parsedSummary: authFailedMsg,
           findingsCount: 0
         }
       };
@@ -94,12 +217,17 @@ export function runWindowsSecurityAudit(
   }
 
   // =========================================================================
-  // CASE 2: LOCAL TARGET HOST (e.g. 127.0.0.1, localhost, server LAN IP)
-  // Running authenticated security checks on the host running VulnSight
+  // CASE 2: LOCAL TARGET HOST ASSESSMENT (process.platform === 'win32')
   // =========================================================================
   if (process.platform !== 'win32') {
     const nonWinMsg = `Local host is running on ${process.platform}. Windows PowerShell security checks are skipped.`;
-    console.log(`[Windows Audit] ${nonWinMsg}`);
+    console.log('[Windows Audit]');
+    console.log(`Checking local host platform... ${process.platform}`);
+    console.log('Result:');
+    console.log('Authenticated assessment skipped.');
+    console.log('Reason:');
+    console.log(nonWinMsg);
+
     rawLogs += `[Environment Note]: ${nonWinMsg}\n`;
 
     return {
@@ -123,7 +251,7 @@ export function runWindowsSecurityAudit(
     };
   }
 
-  // Local Windows Machine PowerShell Execution
+  // Local Windows Machine PowerShell Execution (Only executed on Windows OS)
   let livePsAvailable = false;
   let fwOutput = '';
   let mpOutput = '';
@@ -200,7 +328,7 @@ export function runWindowsSecurityAudit(
   console.log('[Windows Audit] Audit Complete.');
 
   // =========================================================================
-  // EVALUATE ACTUAL AUDIT RESULTS (Only report if verified disabled/flawed)
+  // EVALUATE ACTUAL AUDIT RESULTS
   // =========================================================================
 
   // A. Firewall Audit Evaluation
