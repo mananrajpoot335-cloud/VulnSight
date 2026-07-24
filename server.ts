@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { generateDynamicRemediation } from './server/remediationEngine.js';
 import { runWindowsSecurityAudit } from './server/windowsAuditEngine.js';
+import { performDomainAssessment } from './server/domainLookup.js';
 import { ModuleExecutionLog, ScanDiagnostics, Vulnerability } from './src/types.js';
 
 dotenv.config();
@@ -282,8 +283,24 @@ app.post('/api/scans/launch', async (req, res) => {
     nmap: '',
     nikto: '',
     whatweb: '',
-    ssl: ''
+    ssl: '',
+    dns: '',
+    whois: ''
   };
+
+  // Perform real Domain & Reconnaissance Assessment (DNS, RDAP WHOIS, TLS, HTTP)
+  console.log('[Domain Assessment] Performing DNS, RDAP, TLS, and HTTP recon lookups...');
+  const domainReconResult = await performDomainAssessment(cleanTarget);
+  const domainAssessment = domainReconResult.domainAssessment;
+
+  rawOutputs['dns'] = domainReconResult.rawOutputs.dns;
+  rawOutputs['whois'] = domainReconResult.rawOutputs.whois;
+  if (domainReconResult.rawOutputs.ssl) {
+    rawOutputs['ssl'] = domainReconResult.rawOutputs.ssl;
+  }
+  if (domainReconResult.rawOutputs.http) {
+    rawOutputs['whatweb'] = domainReconResult.rawOutputs.http;
+  }
 
   // -------------------------------------------------------------------------
   // MODULE 1: Host Discovery
@@ -604,6 +621,7 @@ app.post('/api/scans/launch', async (req, res) => {
     vulnerabilities,
     rawOutput: rawOutputs,
     diagnostics,
+    domainAssessment,
     notes: isLocalHost
       ? `Completed scan on local VulnSight host (${cleanTarget}). ${vulnerabilities.length} finding(s) verified.`
       : `Completed network assessment on remote host ${cleanTarget}. ${winAudit.statusMessage}`
