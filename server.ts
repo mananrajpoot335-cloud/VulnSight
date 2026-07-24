@@ -627,6 +627,18 @@ app.post('/api/scans/launch', async (req, res) => {
       : `Completed network assessment on remote host ${cleanTarget}. ${winAudit.statusMessage}`
   };
 
+  console.log(`\n==================================================`);
+  console.log(`[API Response /api/scans/launch] Returning scan object ID: ${newScan.id}`);
+  console.log(`[API Response] Target: ${newScan.target}`);
+  console.log(`[API Response] Has domainAssessment:`, Boolean(newScan.domainAssessment));
+  console.log(`[API Response] domainAssessment summary:`, JSON.stringify({
+    domainName: newScan.domainAssessment?.domainInfo?.domainName,
+    publicIp: newScan.domainAssessment?.ipInfo?.publicIp,
+    webServer: newScan.domainAssessment?.webServer?.webServer,
+    sslIssuer: newScan.domainAssessment?.sslDetails?.issuer
+  }));
+  console.log(`==================================================\n`);
+
   mockScans.unshift(newScan);
   res.json(newScan);
 });
