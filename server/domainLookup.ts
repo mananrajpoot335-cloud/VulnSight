@@ -5,6 +5,87 @@ import http from 'http';
 import https from 'https';
 import { DomainAssessmentData, DomainInfo, DnsRecordDetails, IpInformation, WebServerDetails, SslCertificateDetails, EmailSecurityDetails } from '../src/types.js';
 
+export type TargetType = 'PRIVATE_IP' | 'PUBLIC_IP' | 'DOMAIN';
+
+export interface TargetClassification {
+  cleanTarget: string;
+  targetType: TargetType;
+  targetTypeLabel: string;
+}
+
+/**
+ * Classifies a scan target as PRIVATE_IP, PUBLIC_IP, or DOMAIN.
+ */
+export function classifyTarget(target: string): TargetClassification {
+  const cleanTarget = target.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+
+  // Check IPv4
+  const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+  const ipv4Match = cleanTarget.match(ipv4Regex);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1, 5).map(Number);
+    if (octets.every(o => o >= 0 && o <= 255)) {
+      const [a, b] = octets;
+      // Private RFC 1918 ranges, loopback, APIPA link-local:
+      // 10.0.0.0/8
+      // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+      // 192.168.0.0/16
+      // 127.0.0.0/8
+      // 169.254.0.0/16
+      if (
+        a === 10 ||
+        a === 127 ||
+        (a === 192 && b === 168) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 169 && b === 254)
+      ) {
+        return {
+          cleanTarget,
+          targetType: 'PRIVATE_IP',
+          targetTypeLabel: 'Private IP Address (RFC 1918 / LAN)'
+        };
+      }
+      return {
+        cleanTarget,
+        targetType: 'PUBLIC_IP',
+        targetTypeLabel: 'Public IP Address'
+      };
+    }
+  }
+
+  // Check IPv6 loopback / private / link-local / localhost
+  if (cleanTarget.toLowerCase() === 'localhost' || cleanTarget === '::1') {
+    return {
+      cleanTarget,
+      targetType: 'PRIVATE_IP',
+      targetTypeLabel: 'Private IP / Loopback Host'
+    };
+  }
+
+  if (cleanTarget.includes(':')) {
+    const lower = cleanTarget.toLowerCase();
+    if (lower.startsWith('fe80:') || lower.startsWith('fc00:') || lower.startsWith('fd00:')) {
+      return {
+        cleanTarget,
+        targetType: 'PRIVATE_IP',
+        targetTypeLabel: 'Private IPv6 Host'
+      };
+    }
+    return {
+      cleanTarget,
+      targetType: 'PUBLIC_IP',
+      targetTypeLabel: 'Public IPv6 Address'
+    };
+  }
+
+  // Otherwise, Domain / FQDN
+  return {
+    cleanTarget,
+    targetType: 'DOMAIN',
+    targetTypeLabel: 'Domain Name / FQDN'
+  };
+}
+
 /**
  * TCP Port 43 WHOIS Client with Referral Follow-Up
  */
@@ -200,15 +281,137 @@ async function makeHttpRequest(targetUrl: string, maxRedirects = 5): Promise<Htt
   throw new Error(`Exceeded maximum redirect limit for ${targetUrl}`);
 }
 
-export async function performDomainAssessment(cleanTarget: string): Promise<{
+export async function performDomainAssessment(
+  rawTarget: string,
+  overrideTargetType?: TargetType
+): Promise<{
   domainAssessment: DomainAssessmentData;
   rawOutputs: { dns: string; whois: string; ssl: string; http: string };
 }> {
+  const classification = classifyTarget(rawTarget);
+  const cleanTarget = classification.cleanTarget;
+  const targetType = overrideTargetType || classification.targetType;
+
   console.log(`\n==================================================`);
-  console.log(`[Domain Recon Pipeline] Launching assessment for target: "${cleanTarget}"`);
+  console.log(`[Recon Engine] Launching assessment for target: "${cleanTarget}"`);
+  console.log(`[Recon Engine] Target Classification: ${targetType} (${classification.targetTypeLabel})`);
   console.log(`==================================================\n`);
 
-  const domainInfo: DomainInfo = {};
+  // -------------------------------------------------------------------------
+  // TARGET TYPE A: PRIVATE IP (RFC 1918)
+  // -------------------------------------------------------------------------
+  if (targetType === 'PRIVATE_IP') {
+    console.log(`[Recon Engine] Private LAN IP detected (${cleanTarget}). Skipping all Domain/WHOIS/RDAP/DNSSEC modules.`);
+    return {
+      domainAssessment: {
+        targetType: 'PRIVATE_IP',
+        targetTypeLabel: 'Private IP Address (RFC 1918 / LAN)',
+        skipReason: 'Private LAN IPs are not domains. WHOIS, RDAP, DNSSEC, and registrar lookups were automatically skipped in compliance with security scanner standards.'
+      },
+      rawOutputs: {
+        dns: `[Skipped] Target ${cleanTarget} is a Private IP address (RFC 1918 / LAN). Domain DNS lookups do not apply.`,
+        whois: `[Skipped] Target ${cleanTarget} is a Private IP address (RFC 1918 / LAN). WHOIS/RDAP domain registrar lookups do not apply.`,
+        ssl: `[Skipped] SSL assessment on port 443.`,
+        http: `[Skipped] Web assessment.`
+      }
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TARGET TYPE B: PUBLIC IP ADDRESS
+  // -------------------------------------------------------------------------
+  if (targetType === 'PUBLIC_IP') {
+    console.log(`[Recon Engine] Public IP detected (${cleanTarget}). Running IP RDAP Intelligence and Reverse DNS.`);
+    const ipInfo: IpInformation = { publicIp: cleanTarget };
+    const whoisLogLines: string[] = [`[IP Intelligence RDAP Report for Public IP: ${cleanTarget}]`];
+    let ptrRecord: string | undefined = undefined;
+
+    // Reverse DNS Lookup
+    try {
+      console.log(`[DNS Reverse] Querying reverse PTR for IP ${cleanTarget}...`);
+      const ptrs = await dns.reverse(cleanTarget);
+      if (ptrs && ptrs.length > 0) {
+        ptrRecord = ptrs.join(', ');
+        ipInfo.reverseDns = ptrRecord;
+        console.log(`[DNS Reverse] Success. PTR: ${ptrRecord}`);
+      }
+    } catch (e: any) {
+      console.log(`[DNS Reverse] No PTR record for ${cleanTarget}: ${e.message || String(e)}`);
+    }
+
+    // Query IP RDAP for ASN, CIDR, Network Range, Hosting Provider, Organization
+    try {
+      console.log(`[RDAP IP] Querying RDAP for IP: ${cleanTarget}...`);
+      const ipRdapRes = await fetch(`https://rdap.org/ip/${cleanTarget}`, {
+        headers: { 'Accept': 'application/rdap+json, application/json' },
+        signal: AbortSignal.timeout(6000)
+      });
+
+      if (ipRdapRes.ok) {
+        const ipRdap: any = await ipRdapRes.json();
+        whoisLogLines.push(JSON.stringify(ipRdap, null, 2));
+
+        let asnVal: string | undefined = undefined;
+        if (typeof ipRdap.asn === 'number' || typeof ipRdap.asn === 'string') {
+          asnVal = String(ipRdap.asn);
+        } else if (typeof ipRdap.autnum === 'number' || typeof ipRdap.autnum === 'string') {
+          asnVal = String(ipRdap.autnum);
+        } else if (typeof ipRdap.handle === 'string' && /^AS\d+/i.test(ipRdap.handle)) {
+          asnVal = ipRdap.handle;
+        }
+
+        if (asnVal) {
+          asnVal = asnVal.toUpperCase().trim();
+          if (!asnVal.startsWith('AS')) asnVal = `AS${asnVal}`;
+          ipInfo.asnNumber = asnVal;
+        }
+
+        if (Array.isArray(ipRdap.cidr0_cidrs) && ipRdap.cidr0_cidrs.length > 0) {
+          const c0 = ipRdap.cidr0_cidrs[0];
+          if (c0.v4prefix && c0.length !== undefined) ipInfo.cidr = `${c0.v4prefix}/${c0.length}`;
+          else if (c0.v6prefix && c0.length !== undefined) ipInfo.cidr = `${c0.v6prefix}/${c0.length}`;
+        }
+
+        if (ipRdap.startAddress && ipRdap.endAddress) {
+          ipInfo.ipNetworkRange = `${ipRdap.startAddress} - ${ipRdap.endAddress}`;
+        } else if (ipRdap.handle && !ipRdap.handle.startsWith('AS')) {
+          ipInfo.ipNetworkRange = ipRdap.handle;
+        }
+
+        ipInfo.hostingProvider = ipRdap.name || ipRdap.type || 'Hosting Provider';
+        ipInfo.organization = ipRdap.org || ipRdap.name || 'Organization Resolved';
+        ipInfo.country = ipRdap.country || 'Country Resolved';
+        console.log(`[RDAP IP] Success. IP RDAP parsed:`, JSON.stringify(ipInfo));
+      } else {
+        whoisLogLines.push(`RDAP IP Query Status: ${ipRdapRes.status} ${ipRdapRes.statusText}`);
+      }
+    } catch (err: any) {
+      console.error(`[RDAP IP Exception] IP RDAP lookup failed for ${cleanTarget}:`, err.message || String(err));
+      whoisLogLines.push(`RDAP IP Query Exception: ${err.message || String(err)}`);
+    }
+
+    return {
+      domainAssessment: {
+        targetType: 'PUBLIC_IP',
+        targetTypeLabel: 'Public IP Address',
+        ipInfo
+      },
+      rawOutputs: {
+        dns: `[IP Target] Reverse DNS Lookup for ${cleanTarget}: ${ptrRecord || 'No PTR record resolved'}`,
+        whois: whoisLogLines.join('\n'),
+        ssl: `[Skipped] SSL assessment on port 443.`,
+        http: `[Skipped] Web assessment.`
+      }
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TARGET TYPE C: DOMAIN / FQDN (Full Domain Recon Pipeline)
+  // -------------------------------------------------------------------------
+  const domainInfo: DomainInfo = {
+    domainName: cleanTarget,
+    registeredDomain: cleanTarget
+  };
   const dnsRecords: DnsRecordDetails = {};
   const ipInfo: IpInformation = {};
   const webServer: WebServerDetails = {};
@@ -222,9 +425,7 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
     http: ''
   };
 
-  // -------------------------------------------------------------------------
   // 1. DNS RESOLUTION & ENUMERATION PIPELINE
-  // -------------------------------------------------------------------------
   console.log(`[DNS] Starting DNS Resolution & Enumeration for "${cleanTarget}"...`);
   const dnsLogLines: string[] = [];
   let publicIp: string | undefined = undefined;
@@ -248,183 +449,147 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
   // System DNS Lookup Fallback (getaddrinfo)
   if (!publicIp) {
     try {
-      console.log(`[DNS Fallback] Querying OS resolver via dns.lookup("${cleanTarget}")...`);
+      console.log(`[DNS Fallback] Querying system DNS via dns.lookup("${cleanTarget}")...`);
       const lookupResult = await dns.lookup(cleanTarget);
       if (lookupResult && lookupResult.address) {
         publicIp = lookupResult.address;
-        ipInfo.publicIp = publicIp;
         dnsRecords.aRecords = [publicIp];
-        dnsLogLines.push(`[A Records (System Lookup Fallback)]\n${publicIp}`);
-        console.log(`[DNS Fallback] Success. OS resolver returned IP: ${publicIp}`);
+        ipInfo.publicIp = publicIp;
+        dnsLogLines.push(`[System DNS Fallback] Resolved: ${publicIp}`);
+        console.log(`[DNS Fallback] Success. Resolved via lookup: ${publicIp}`);
       }
     } catch (err: any) {
-      console.error(`[DNS Exception] System lookup fallback failed for ${cleanTarget}:`, err.message || String(err));
-      dnsLogLines.push(`[A Records] System lookup failed: ${err.message || String(err)}`);
+      console.error(`[DNS Fallback Exception] System lookup failed for ${cleanTarget}:`, err.message || String(err));
+      dnsLogLines.push(`[System DNS Fallback] failed: ${err.message || String(err)}`);
+    }
+  }
+
+  // Reverse DNS Lookup
+  if (publicIp) {
+    try {
+      console.log(`[DNS Reverse] Querying reverse PTR for IP ${publicIp}...`);
+      const ptrs = await dns.reverse(publicIp);
+      if (ptrs && ptrs.length > 0) {
+        ipInfo.reverseDns = ptrs.join(', ');
+        dnsLogLines.push(`[Reverse DNS]\n${ipInfo.reverseDns}`);
+        console.log(`[DNS Reverse] Success. PTR: ${ipInfo.reverseDns}`);
+      }
+    } catch (e: any) {
+      console.log(`[DNS Reverse] No PTR record for ${publicIp}: ${e.message || String(e)}`);
     }
   }
 
   // AAAA Records
   try {
-    console.log(`[DNS] Querying AAAA records via dns.resolve6("${cleanTarget}")...`);
     const aaaa = await dns.resolve6(cleanTarget);
     if (aaaa && aaaa.length > 0) {
       dnsRecords.aaaaRecords = aaaa;
       dnsLogLines.push(`[AAAA Records]\n${aaaa.join('\n')}`);
-      console.log(`[DNS] Success. Resolved AAAA records:`, aaaa);
     }
-  } catch (err: any) {
-    console.log(`[DNS] AAAA records not found/failed:`, err.message || String(err));
-    dnsLogLines.push(`[AAAA Records] Lookup failed/none: ${err.message || String(err)}`);
-  }
+  } catch (e) {}
 
   // MX Records
   try {
-    console.log(`[DNS] Querying MX records via dns.resolveMx("${cleanTarget}")...`);
+    console.log(`[DNS] Querying MX records for "${cleanTarget}"...`);
     const mx = await dns.resolveMx(cleanTarget);
     if (mx && mx.length > 0) {
-      dnsRecords.mxRecords = mx.map(m => `Priority ${m.priority}: ${m.exchange}`);
-      dnsLogLines.push(`[MX Records]\n${dnsRecords.mxRecords.join('\n')}`);
-      emailSecurity.mxValidation = `${mx.length} MX record(s) resolved successfully`;
-      console.log(`[DNS] Success. Resolved MX records:`, dnsRecords.mxRecords);
-    } else {
-      emailSecurity.mxValidation = 'No MX records found';
+      const mxFormatted = mx.sort((a, b) => a.priority - b.priority).map(m => `${m.priority} ${m.exchange}`);
+      dnsRecords.mxRecords = mxFormatted;
+      dnsLogLines.push(`[MX Records]\n${mxFormatted.join('\n')}`);
+      console.log(`[DNS] Success. MX records:`, mxFormatted);
     }
   } catch (err: any) {
-    console.log(`[DNS] MX records failed/none:`, err.message || String(err));
-    dnsLogLines.push(`[MX Records] Lookup failed/none: ${err.message || String(err)}`);
-    emailSecurity.mxValidation = 'MX lookup failed';
+    console.log(`[DNS] MX query result for ${cleanTarget}: No records found`);
   }
 
-  // NS Records
+  // Authoritative Name Servers (NS Records)
   try {
-    console.log(`[DNS] Querying NS records via dns.resolveNs("${cleanTarget}")...`);
+    console.log(`[DNS] Querying NS records for "${cleanTarget}"...`);
     const ns = await dns.resolveNs(cleanTarget);
     if (ns && ns.length > 0) {
-      dnsRecords.nsRecords = ns;
       domainInfo.authoritativeNameServers = ns;
-      dnsLogLines.push(`[NS Records (Authoritative DNS)]\n${ns.join('\n')}`);
-      console.log(`[DNS] Success. Resolved Authoritative NS records:`, ns);
+      dnsRecords.nsRecords = ns;
+      dnsLogLines.push(`[Authoritative NS Records]\n${ns.join('\n')}`);
+      console.log(`[DNS] Success. Authoritative NS records:`, ns);
     }
   } catch (err: any) {
-    console.log(`[DNS] NS records failed/none:`, err.message || String(err));
-    dnsLogLines.push(`[NS Records] Lookup failed/none: ${err.message || String(err)}`);
+    console.log(`[DNS] NS query result for ${cleanTarget}: No records found`);
   }
 
-  // CNAME Records
+  // TXT Records & Email Security (SPF / DMARC / DKIM)
   try {
-    console.log(`[DNS] Querying CNAME records via dns.resolveCname("${cleanTarget}")...`);
-    const cname = await dns.resolveCname(cleanTarget);
-    if (cname && cname.length > 0) {
-      dnsRecords.cnameRecords = cname;
-      dnsLogLines.push(`[CNAME Records]\n${cname.join('\n')}`);
-      console.log(`[DNS] Success. Resolved CNAME records:`, cname);
-    }
-  } catch (err: any) {
-    dnsLogLines.push(`[CNAME Records] Lookup failed/none: ${err.message || String(err)}`);
-  }
-
-  // SOA Record
-  try {
-    console.log(`[DNS] Querying SOA record via dns.resolveSoa("${cleanTarget}")...`);
-    const soa = await dns.resolveSoa(cleanTarget);
-    if (soa) {
-      dnsRecords.soaRecord = `Hostmaster: ${soa.hostmaster}, NS: ${soa.nsname}, Serial: ${soa.serial}, Refresh: ${soa.refresh}`;
-      dnsLogLines.push(`[SOA Record]\n${dnsRecords.soaRecord}`);
-      console.log(`[DNS] Success. Resolved SOA record:`, dnsRecords.soaRecord);
-    }
-  } catch (err: any) {
-    dnsLogLines.push(`[SOA Record] Lookup failed/none: ${err.message || String(err)}`);
-  }
-
-  // TXT Records & SPF
-  try {
-    console.log(`[DNS] Querying TXT records via dns.resolveTxt("${cleanTarget}")...`);
+    console.log(`[DNS] Querying TXT records for "${cleanTarget}"...`);
     const txt = await dns.resolveTxt(cleanTarget);
     if (txt && txt.length > 0) {
-      const flattenedTxt = txt.map(t => t.join(''));
+      const flattenedTxt = txt.map(parts => parts.join(''));
       dnsRecords.txtRecords = flattenedTxt;
       dnsLogLines.push(`[TXT Records]\n${flattenedTxt.join('\n')}`);
-      console.log(`[DNS] Success. Resolved TXT records count: ${flattenedTxt.length}`);
 
       const spf = flattenedTxt.find(t => t.toLowerCase().startsWith('v=spf1'));
       if (spf) {
         dnsRecords.spfRecord = spf;
         emailSecurity.spfRecord = spf;
-        console.log(`[DNS] Found SPF Record:`, spf);
       }
     }
-  } catch (err: any) {
-    dnsLogLines.push(`[TXT Records] Lookup failed/none: ${err.message || String(err)}`);
-  }
+  } catch (e) {}
 
   // DMARC Record
   try {
-    console.log(`[DNS] Querying DMARC record via dns.resolveTxt("_dmarc.${cleanTarget}")...`);
-    const dmarcTxt = await dns.resolveTxt(`_dmarc.${cleanTarget}`);
+    const dmarcTarget = `_dmarc.${cleanTarget}`;
+    const dmarcTxt = await dns.resolveTxt(dmarcTarget);
     if (dmarcTxt && dmarcTxt.length > 0) {
-      const flattenedDmarc = dmarcTxt.map(t => t.join('')).find(t => t.toLowerCase().startsWith('v=dmarc1'));
-      if (flattenedDmarc) {
-        dnsRecords.dmarcRecord = flattenedDmarc;
-        emailSecurity.dmarcRecord = flattenedDmarc;
-        dnsLogLines.push(`[DMARC Record]\n${flattenedDmarc}`);
-        console.log(`[DNS] Success. Found DMARC Record:`, flattenedDmarc);
-      }
+      const flattenedDmarc = dmarcTxt.map(parts => parts.join('')).join('; ');
+      dnsRecords.dmarcRecord = flattenedDmarc;
+      emailSecurity.dmarcRecord = flattenedDmarc;
     }
-  } catch (err: any) {
-    dnsLogLines.push(`[DMARC Record] Lookup failed/none: ${err.message || String(err)}`);
+  } catch (e) {
+    emailSecurity.dmarcRecord = 'No DMARC record published';
   }
 
-  // DKIM Record Check
+  // DKIM Selector Test
   try {
-    console.log(`[DNS] Querying DKIM record via dns.resolveTxt("default._domainkey.${cleanTarget}")...`);
-    const dkimTxt = await dns.resolveTxt(`default._domainkey.${cleanTarget}`);
+    const dkimTarget = `default._domainkey.${cleanTarget}`;
+    const dkimTxt = await dns.resolveTxt(dkimTarget);
     if (dkimTxt && dkimTxt.length > 0) {
-      const dkimStr = dkimTxt.map(t => t.join('')).join(' ');
-      dnsRecords.dkimStatus = `Detected (default selector): ${dkimStr.slice(0, 60)}...`;
-      emailSecurity.dkimStatus = dnsRecords.dkimStatus;
-      dnsLogLines.push(`[DKIM Record]\n${dkimStr}`);
-      console.log(`[DNS] Success. Found DKIM Record:`, dkimStr);
+      emailSecurity.dkimStatus = 'DKIM Key Discovered (default selector)';
+      dnsRecords.dkimStatus = 'DKIM Active';
     } else {
-      dnsRecords.dkimStatus = 'Default selector not published (custom selector required)';
-      emailSecurity.dkimStatus = dnsRecords.dkimStatus;
+      emailSecurity.dkimStatus = 'DKIM record not found on standard selector';
     }
-  } catch (err: any) {
-    dnsRecords.dkimStatus = 'Selector default._domainkey not found';
-    emailSecurity.dkimStatus = dnsRecords.dkimStatus;
+  } catch (e) {
+    emailSecurity.dkimStatus = 'DKIM record not found on default selector';
   }
 
-  rawOutputs.dns = dnsLogLines.join('\n\n');
-
-  // -------------------------------------------------------------------------
-  // 2. REVERSE DNS LOOKUP
-  // -------------------------------------------------------------------------
-  if (publicIp) {
-    try {
-      console.log(`[Reverse DNS] Querying PTR record for IP: ${publicIp}...`);
-      const ptr = await dns.reverse(publicIp);
-      if (ptr && ptr.length > 0) {
-        ipInfo.reverseDns = ptr.join(', ');
-        console.log(`[Reverse DNS] Success. PTR: ${ipInfo.reverseDns}`);
-      }
-    } catch (err: any) {
-      console.log(`[Reverse DNS] PTR lookup failed for ${publicIp}:`, err.message || String(err));
-      ipInfo.reverseDns = 'No PTR record found';
+  // CNAME Records
+  try {
+    const cname = await dns.resolveCname(cleanTarget);
+    if (cname && cname.length > 0) {
+      dnsRecords.cnameRecords = cname;
+      dnsLogLines.push(`[CNAME Records]\n${cname.join('\n')}`);
     }
-  }
+  } catch (e) {}
 
-  // -------------------------------------------------------------------------
-  // 3. WHOIS DATA & IP GEOLOCATION (RDAP + TCP WHOIS)
-  // -------------------------------------------------------------------------
-  console.log(`[RDAP/WHOIS] Starting WHOIS & Geolocation lookup for "${cleanTarget}"...`);
+  // SOA Record
+  try {
+    const soa = await dns.resolveSoa(cleanTarget);
+    if (soa) {
+      const soaStr = `Primary NS: ${soa.nsname}, Hostmaster: ${soa.hostmaster}, Serial: ${soa.serial}`;
+      dnsRecords.soaRecord = soaStr;
+      dnsLogLines.push(`[SOA Record]\n${soaStr}`);
+    }
+  } catch (e) {}
+
+  rawOutputs.dns = dnsLogLines.length > 0 ? dnsLogLines.join('\n\n') : 'No DNS records resolved';
+
+  // 2. WHOIS / RDAP LOOKUP PIPELINE
+  console.log(`[RDAP] Querying RDAP domain lookup for "${cleanTarget}"...`);
   const whoisLogLines: string[] = [];
   let rdapSuccess = false;
 
   try {
-    whoisLogLines.push(`Querying RDAP for domain: ${cleanTarget}`);
-    console.log(`[RDAP] Fetching https://rdap.org/domain/${cleanTarget}...`);
     const domainRdapRes = await fetch(`https://rdap.org/domain/${cleanTarget}`, {
       headers: { 'Accept': 'application/rdap+json, application/json' },
-      signal: AbortSignal.timeout(6000)
+      signal: AbortSignal.timeout(8000)
     });
 
     if (domainRdapRes.ok) {
@@ -434,12 +599,10 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
       domainInfo.domainName = domainRdap.ldhName || cleanTarget;
       domainInfo.registeredDomain = domainRdap.handle || cleanTarget;
 
-      // Special ccTLD Registry Detection (e.g., .pk)
       if (cleanTarget.toLowerCase().endsWith('.pk')) {
         domainInfo.registry = 'PKNIC (Pakistan Network Information Center)';
       }
 
-      // Entities (Registrar & Registry)
       if (Array.isArray(domainRdap.entities)) {
         const registrarEntity = domainRdap.entities.find((e: any) => 
           Array.isArray(e.roles) && e.roles.includes('registrar')
@@ -456,7 +619,6 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         }
       }
 
-      // Events (Dates)
       if (Array.isArray(domainRdap.events)) {
         for (const ev of domainRdap.events) {
           if (ev.eventAction === 'registration') domainInfo.registrationDate = ev.eventDate;
@@ -465,18 +627,15 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         }
       }
 
-      // Status
       if (Array.isArray(domainRdap.status)) {
         domainInfo.domainStatus = domainRdap.status.join(', ');
       }
 
-      // Registry Root Nameservers
       if (Array.isArray(domainRdap.nameservers)) {
         const nsList = domainRdap.nameservers.map((n: any) => n.ldhName).filter(Boolean);
         if (nsList.length > 0) domainInfo.registryNameServers = nsList;
       }
 
-      // DNSSEC
       if (domainRdap.secureDNS) {
         domainInfo.dnssecStatus = domainRdap.secureDNS.delegationSigned ? 'Signed (Active)' : 'Unsigned';
       }
@@ -484,15 +643,14 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
       rdapSuccess = true;
       console.log(`[RDAP] Success. Domain RDAP parsed successfully:`, JSON.stringify(domainInfo));
     } else {
-      console.log(`[RDAP] RDAP domain query status: ${domainRdapRes.status} ${domainRdapRes.statusText}`);
       whoisLogLines.push(`RDAP Domain Query Status: ${domainRdapRes.status} ${domainRdapRes.statusText}`);
     }
   } catch (err: any) {
-    console.error(`[RDAP Exception] Domain RDAP query failed for ${cleanTarget}:`, err.stack || err.message || String(err));
+    console.error(`[RDAP Exception] Domain RDAP query failed for ${cleanTarget}:`, err.message || String(err));
     whoisLogLines.push(`RDAP Domain Query Exception: ${err.message || String(err)}`);
   }
 
-  // TCP WHOIS Fallback if RDAP was unsuccessful or missing registrar/registry
+  // TCP WHOIS Fallback
   if (!rdapSuccess || !domainInfo.registrar || !domainInfo.registry) {
     console.log(`[WHOIS Fallback] Running TCP WHOIS fallback for "${cleanTarget}"...`);
     const whoisResult = await performWhoisQuery(cleanTarget);
@@ -519,11 +677,7 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
     domainInfo.nameServers = allNs;
   }
 
-  // Ensure default domainName & registeredDomain
-  domainInfo.domainName = domainInfo.domainName || cleanTarget;
-  domainInfo.registeredDomain = domainInfo.registeredDomain || cleanTarget;
-
-  // IP RDAP Lookup
+  // IP RDAP Lookup for Resolved Public IP
   if (publicIp) {
     try {
       console.log(`[RDAP IP] Querying RDAP for IP: ${publicIp}...`);
@@ -537,7 +691,6 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         const ipRdap: any = await ipRdapRes.json();
         whoisLogLines.push(JSON.stringify(ipRdap, null, 2));
 
-        // 1. Parse ASN accurately (Must not be IP range or handle like NET-104-21)
         let asnVal: string | undefined = undefined;
         if (typeof ipRdap.asn === 'number' || typeof ipRdap.asn === 'string') {
           asnVal = String(ipRdap.asn);
@@ -549,23 +702,16 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
 
         if (asnVal) {
           asnVal = asnVal.toUpperCase().trim();
-          if (!asnVal.startsWith('AS')) {
-            asnVal = `AS${asnVal}`;
-          }
+          if (!asnVal.startsWith('AS')) asnVal = `AS${asnVal}`;
           ipInfo.asnNumber = asnVal;
         }
 
-        // 2. Parse CIDR separately
         if (Array.isArray(ipRdap.cidr0_cidrs) && ipRdap.cidr0_cidrs.length > 0) {
           const c0 = ipRdap.cidr0_cidrs[0];
-          if (c0.v4prefix && c0.length !== undefined) {
-            ipInfo.cidr = `${c0.v4prefix}/${c0.length}`;
-          } else if (c0.v6prefix && c0.length !== undefined) {
-            ipInfo.cidr = `${c0.v6prefix}/${c0.length}`;
-          }
+          if (c0.v4prefix && c0.length !== undefined) ipInfo.cidr = `${c0.v4prefix}/${c0.length}`;
+          else if (c0.v6prefix && c0.length !== undefined) ipInfo.cidr = `${c0.v6prefix}/${c0.length}`;
         }
 
-        // 3. Parse IP Network Range separately
         if (ipRdap.startAddress && ipRdap.endAddress) {
           ipInfo.ipNetworkRange = `${ipRdap.startAddress} - ${ipRdap.endAddress}`;
         } else if (ipRdap.handle && !ipRdap.handle.startsWith('AS')) {
@@ -580,16 +726,14 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         whoisLogLines.push(`RDAP IP Query Status: ${ipRdapRes.status} ${ipRdapRes.statusText}`);
       }
     } catch (err: any) {
-      console.error(`[RDAP IP Exception] IP RDAP lookup failed for ${publicIp}:`, err.stack || err.message || String(err));
+      console.error(`[RDAP IP Exception] IP RDAP lookup failed for ${publicIp}:`, err.message || String(err));
       whoisLogLines.push(`RDAP IP Query Exception: ${err.message || String(err)}`);
     }
   }
 
   rawOutputs.whois = whoisLogLines.join('\n');
 
-  // -------------------------------------------------------------------------
-  // 4. SSL / TLS CERTIFICATE INSPECTION (NODE TLS SOCKET)
-  // -------------------------------------------------------------------------
+  // 3. SSL / TLS CERTIFICATE INSPECTION (NODE TLS SOCKET)
   console.log(`[SSL] Starting SSL/TLS Certificate inspection on port 443 for "${cleanTarget}"...`);
   try {
     await new Promise<void>((resolve) => {
@@ -600,7 +744,7 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         host: connectHost,
         port: 443,
         servername: cleanTarget,
-        rejectUnauthorized: false, // Critical: allows inspecting certs even if untrusted/expired
+        rejectUnauthorized: false,
         timeout: 8000
       }, () => {
         try {
@@ -638,14 +782,14 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
           socket.end();
           resolve();
         } catch (e: any) {
-          console.error(`[SSL Socket Exception] Error parsing peer certificate:`, e.stack || e.message || String(e));
+          console.error(`[SSL Socket Exception] Error parsing peer certificate:`, e.message || String(e));
           socket.destroy();
           resolve();
         }
       });
 
       socket.on('error', (err) => {
-        console.error(`[SSL Socket Error] Connection failed to ${connectHost}:443:`, err.stack || err.message || String(err));
+        console.error(`[SSL Socket Error] Connection failed to ${connectHost}:443:`, err.message || String(err));
         rawOutputs.ssl = `SSL/TLS Connection Error on port 443: ${err.message}`;
         resolve();
       });
@@ -658,13 +802,11 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
       });
     });
   } catch (err: any) {
-    console.error(`[SSL Exception] Global exception in SSL module:`, err.stack || err.message || String(err));
+    console.error(`[SSL Exception] Global exception in SSL module:`, err.message || String(err));
     rawOutputs.ssl = `SSL/TLS Audit Failed: ${err.message || String(err)}`;
   }
 
-  // -------------------------------------------------------------------------
-  // 5. HTTP / HTTPS WEB SERVER & TECHNOLOGY STACK AUDIT
-  // -------------------------------------------------------------------------
+  // 4. HTTP / HTTPS WEB SERVER & TECHNOLOGY STACK AUDIT
   console.log(`[HTTP] Starting HTTP/HTTPS Web Server Analysis for "${cleanTarget}"...`);
   let httpLogLines: string[] = [];
   try {
@@ -695,14 +837,12 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
 
       webServer.httpHeaders = headersObj;
 
-      // Web server header
       if (headersObj['server']) {
         webServer.webServer = headersObj['server'];
       } else {
         webServer.webServer = 'Active Web Server Detected';
       }
 
-      // Technology & Language headers
       const techList: string[] = [];
       if (headersObj['x-powered-by']) {
         webServer.framework = headersObj['x-powered-by'];
@@ -711,7 +851,6 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
       if (headersObj['via']) techList.push(`Via: ${headersObj['via']}`);
       if (headersObj['server']) techList.push(`Server: ${headersObj['server']}`);
 
-      // CDN Detection
       if (headersObj['cf-ray'] || headersObj['server']?.toLowerCase().includes('cloudflare')) {
         ipInfo.cdnDetected = 'Cloudflare CDN';
         techList.push('Cloudflare');
@@ -728,7 +867,6 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         ipInfo.cdnDetected = 'No CDN detected / Direct Web Server';
       }
 
-      // Body Technology Inspection
       const bodyText = httpResult.bodySnippet.toLowerCase();
       if (bodyText.includes('wp-content') || bodyText.includes('wordpress')) {
         webServer.cmsDetected = 'WordPress';
@@ -745,7 +883,6 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         webServer.techStack = Array.from(new Set(techList));
       }
 
-      // Cookie security
       if (headersObj['set-cookie']) {
         const cookieStr = headersObj['set-cookie'];
         const isSecure = cookieStr.toLowerCase().includes('secure');
@@ -756,10 +893,8 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         webServer.cookieSecurity = 'No Set-Cookie header received';
       }
 
-      // Compression
       webServer.compression = headersObj['content-encoding'] || 'Uncompressed / Plain HTML';
 
-      // Security Headers check
       const secHeadersToAudit = [
         { name: 'Strict-Transport-Security', key: 'strict-transport-security' },
         { name: 'Content-Security-Policy', key: 'content-security-policy' },
@@ -778,14 +913,12 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
         }
       });
 
-      // HSTS Check
       if (headersObj['strict-transport-security']) {
         sslDetails.hstsStatus = `Enabled (${headersObj['strict-transport-security']})`;
       } else {
         sslDetails.hstsStatus = 'Missing HSTS header';
       }
 
-      // Check robots.txt & sitemap.xml
       try {
         const baseRobotsUrl = new URL('/robots.txt', httpResult.url).toString();
         const robotRes = await makeHttpRequest(baseRobotsUrl, 2);
@@ -816,14 +949,15 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
       httpLogLines.push(`HTTP/HTTPS requests failed or connection refused on target ${cleanTarget}`);
     }
   } catch (err: any) {
-    console.error(`[HTTP Exception] Global exception in HTTP module:`, err.stack || err.message || String(err));
+    console.error(`[HTTP Exception] Global exception in HTTP module:`, err.message || String(err));
     httpLogLines.push(`HTTP Audit Exception: ${err.message || String(err)}`);
   }
 
   rawOutputs.http = httpLogLines.join('\n');
 
-  // Fill in DomainAssessmentData
   const domainAssessment: DomainAssessmentData = {
+    targetType: 'DOMAIN',
+    targetTypeLabel: 'Domain Name / FQDN',
     domainInfo,
     dnsRecords,
     ipInfo,
@@ -831,16 +965,6 @@ export async function performDomainAssessment(cleanTarget: string): Promise<{
     sslDetails,
     emailSecurity
   };
-
-  console.log(`\n==================================================`);
-  console.log(`[Domain Recon Pipeline Complete] Summary for target "${cleanTarget}":`);
-  console.log(`- Domain Info:`, JSON.stringify(domainAssessment.domainInfo));
-  console.log(`- DNS Records:`, JSON.stringify(domainAssessment.dnsRecords));
-  console.log(`- IP Info:`, JSON.stringify(domainAssessment.ipInfo));
-  console.log(`- Web Server:`, JSON.stringify(domainAssessment.webServer));
-  console.log(`- SSL Details:`, JSON.stringify(domainAssessment.sslDetails));
-  console.log(`- Email Security:`, JSON.stringify(domainAssessment.emailSecurity));
-  console.log(`==================================================\n`);
 
   return {
     domainAssessment,

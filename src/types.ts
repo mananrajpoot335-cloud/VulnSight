@@ -221,6 +221,9 @@ export interface EmailSecurityDetails {
 }
 
 export interface DomainAssessmentData {
+  targetType?: 'PRIVATE_IP' | 'PUBLIC_IP' | 'DOMAIN';
+  targetTypeLabel?: string;
+  skipReason?: string;
   domainInfo?: DomainInfo;
   dnsRecords?: DnsRecordDetails;
   ipInfo?: IpInformation;

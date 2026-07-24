@@ -10,7 +10,7 @@ interface DomainAssessmentViewProps {
 
 export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan }) => {
   const assessment: DomainAssessmentData = scan.domainAssessment || {};
-  const { domainInfo, dnsRecords, ipInfo, webServer, sslDetails, emailSecurity } = assessment;
+  const { targetType, targetTypeLabel, skipReason, domainInfo, dnsRecords, ipInfo, webServer, sslDetails, emailSecurity } = assessment;
 
   // Helper for rendering values or "Not Available"
   const val = (v?: string | number | null | (string | number)[]) => {
@@ -38,11 +38,11 @@ export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan
               <Globe className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-[#f8fafc]">Domain Reconnaissance & Assessment Report</h2>
+              <h2 className="text-lg font-bold text-[#f8fafc]">Reconnaissance & Assessment Report</h2>
               <div className="text-xs text-[#94a3b8] flex items-center space-x-2 mt-0.5">
                 <span>Target: <code className="text-[#3b82f6] font-mono">{scan.target}</code></span>
                 <span>•</span>
-                <span>Type: <strong className="text-white uppercase">{scan.scanType}</strong></span>
+                <span>Classification: <strong className="text-[#38bdf8]">{targetTypeLabel || targetType || 'Domain / IP'}</strong></span>
                 <span>•</span>
                 <span>Risk Score: <strong className={scan.riskScore > 50 ? "text-[#ef4444]" : "text-[#10b981]"}>{scan.riskScore}/100</strong></span>
               </div>
@@ -55,6 +55,17 @@ export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan
           </div>
         </div>
       </div>
+
+      {/* Private IP Notice Banner */}
+      {targetType === 'PRIVATE_IP' && (
+        <div className="bg-[#0f172a] border border-[#3b82f6]/40 rounded-xl p-4 flex items-start space-x-3 text-xs text-[#cbd5e1]">
+          <Shield className="w-5 h-5 text-[#3b82f6] shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-bold text-[#f8fafc]">Private LAN IP Assessment Mode Active</div>
+            <p>{skipReason || "Private LAN IPs are not public domains. Public WHOIS, RDAP, DNSSEC, and registrar lookups were skipped automatically."}</p>
+          </div>
+        </div>
+      )}
 
       {/* Grid of Sections */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { generateDynamicRemediation } from './server/remediationEngine.js';
 import { runWindowsSecurityAudit } from './server/windowsAuditEngine.js';
-import { performDomainAssessment } from './server/domainLookup.js';
+import { performDomainAssessment, classifyTarget } from './server/domainLookup.js';
 import { ModuleExecutionLog, ScanDiagnostics, Vulnerability } from './src/types.js';
 
 dotenv.config();
@@ -266,11 +266,14 @@ app.post('/api/scans/launch', async (req, res) => {
   const scanId = 'scn-' + Date.now().toString().slice(-6);
   const now = new Date().toISOString();
 
-  const cleanTarget = target.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+  const classification = classifyTarget(target);
+  const cleanTarget = classification.cleanTarget;
+  const targetType = classification.targetType;
   const isLocalHost = isLocalHostTarget(cleanTarget);
 
   console.log(`\n==================================================`);
   console.log(`[Scan Engine Launch] ID: ${scanId} | Target: ${cleanTarget}`);
+  console.log(`[Target Classification] Type: ${targetType} (${classification.targetTypeLabel})`);
   console.log(`[Target Locality Check] Is Local Host: ${isLocalHost} | Server IPs: ${getLocalServerIps().join(', ')}`);
   console.log(`==================================================\n`);
 
@@ -288,9 +291,9 @@ app.post('/api/scans/launch', async (req, res) => {
     whois: ''
   };
 
-  // Perform real Domain & Reconnaissance Assessment (DNS, RDAP WHOIS, TLS, HTTP)
-  console.log('[Domain Assessment] Performing DNS, RDAP, TLS, and HTTP recon lookups...');
-  const domainReconResult = await performDomainAssessment(cleanTarget);
+  // Perform Reconnaissance Assessment based on target type
+  console.log(`[Recon Assessment] Performing recon assessment for ${targetType} target...`);
+  const domainReconResult = await performDomainAssessment(cleanTarget, targetType);
   const domainAssessment = domainReconResult.domainAssessment;
 
   rawOutputs['dns'] = domainReconResult.rawOutputs.dns;
