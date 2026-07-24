@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   Shield, LayoutDashboard, Terminal, Server, FileText, Settings, Users, 
-  Calendar, CheckSquare, Activity, LogOut, Sun, Moon, Search, AlertTriangle, ChevronRight, User as UserIcon, Trash2
+  Calendar, CheckSquare, Activity, LogOut, Sun, Moon, Search, AlertTriangle, ChevronRight, User as UserIcon, Trash2, Code2
 } from 'lucide-react';
 import { 
   Asset, Vulnerability, ScanResult, ScheduledScan, RemediationTask, ActivityLog, DashboardStats, User, VulnerabilityStatus
@@ -16,6 +16,7 @@ import { ScanConsole } from './components/ScanConsole';
 import { AssetInventory } from './components/AssetInventory';
 import { ReportGenerator } from './components/ReportGenerator';
 import { VulnerabilityDetailModal } from './components/VulnerabilityDetailModal';
+import { DeveloperDiagnostics } from './components/DeveloperDiagnostics';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -373,6 +374,21 @@ export default function App() {
                 <span>Audit Logs</span>
               </div>
             </button>
+
+            <button
+              id="nav-diagnostics"
+              onClick={() => setActiveTab('diagnostics')}
+              className={`w-full flex items-center justify-between px-3 py-2.5 transition-all text-xs ${
+                activeTab === 'diagnostics' 
+                  ? 'bg-[#3b82f6]/10 text-[#3b82f6] font-semibold border-r-[3px] border-[#3b82f6]' 
+                  : 'text-[#94a3b8] hover:text-[#f8fafc] hover:bg-[#1e293b]/60'
+              }`}
+            >
+              <div className="flex items-center space-x-3">
+                <Code2 className="w-4 h-4 text-[#3b82f6]" />
+                <span>Engine Diagnostics</span>
+              </div>
+            </button>
           </nav>
         </div>
 
@@ -403,6 +419,7 @@ export default function App() {
               {activeTab === 'reports' && 'Executive Security Reports'}
               {activeTab === 'tasks' && 'Remediation Workflow Tasks'}
               {activeTab === 'logs' && 'Security Audit Trail'}
+              {activeTab === 'diagnostics' && 'Developer & Engine Diagnostics'}
             </h2>
 
             <div className="relative hidden lg:block">
@@ -626,6 +643,10 @@ export default function App() {
                 ))}
               </div>
             </div>
+          )}
+
+          {activeTab === 'diagnostics' && (
+            <DeveloperDiagnostics scans={scans} />
           )}
         </main>
       </div>

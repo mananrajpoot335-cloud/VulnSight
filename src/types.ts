@@ -56,6 +56,8 @@ export interface RemediationDetails {
   estimatedImpact?: string;
 }
 
+export type FindingCategory = 'Network-Based Finding' | 'Authenticated Host Finding';
+
 export interface Vulnerability {
   id: string;
   title: string;
@@ -73,6 +75,7 @@ export interface Vulnerability {
   references: string[];
   status: VulnerabilityStatus;
   remediation: RemediationDetails;
+  findingCategory?: FindingCategory;
   aiAnalysis?: {
     executiveSummary: string;
     technicalExplanation: string;
@@ -87,6 +90,27 @@ export interface Vulnerability {
   detectedAt: string;
   updatedAt?: string;
   scanId?: string;
+}
+
+export interface ModuleExecutionLog {
+  moduleName: string; // e.g. 'Host Discovery', 'Port Scan', 'Service Detection', 'OS Detection', 'Web Assessment', 'SSL Assessment', 'Authenticated Windows Audit', 'Authenticated Linux Audit'
+  status: 'Executed' | 'Skipped' | 'Failed';
+  reason?: string;
+  commandsRun?: string[];
+  hostExecutedOn?: string;
+  rawOutput?: string;
+  parsedSummary?: string;
+  findingsCount?: number;
+}
+
+export interface ScanDiagnostics {
+  targetHost: string;
+  isLocalHostScan: boolean;
+  isWindowsServer: boolean;
+  winRmConfigured: boolean;
+  executionTimestamp: string;
+  modulesExecuted: string[]; // List of module names executed
+  modulesList: ModuleExecutionLog[];
 }
 
 export interface ScanPluginConfig {
@@ -134,6 +158,7 @@ export interface ScanResult {
     whois?: string;
     httpHeader?: string;
   };
+  diagnostics?: ScanDiagnostics;
   notes?: string;
 }
 
