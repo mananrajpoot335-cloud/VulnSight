@@ -430,6 +430,7 @@ app.post('/api/scans/launch', async (req, res) => {
       references: ['https://owasp.org/www-project-secure-headers/'],
       status: 'Open',
       findingCategory: 'Network-Based Finding',
+      moduleDiscovered: 'Nikto Web Scan',
       remediation: platformRemediation,
       detectedAt: now,
       scanId: scanId

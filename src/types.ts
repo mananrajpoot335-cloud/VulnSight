@@ -76,6 +76,7 @@ export interface Vulnerability {
   status: VulnerabilityStatus;
   remediation: RemediationDetails;
   findingCategory?: FindingCategory;
+  moduleDiscovered?: string; // Name of the scan module that discovered this finding (e.g., 'Nmap', 'Nikto', 'WhatWeb', 'SSLyze', 'DNS', 'WHOIS', 'OS Detection', 'Service Detection', 'Authenticated Windows Audit')
   aiAnalysis?: {
     executiveSummary: string;
     technicalExplanation: string;
@@ -93,13 +94,19 @@ export interface Vulnerability {
 }
 
 export interface ModuleExecutionLog {
-  moduleName: string; // e.g. 'Host Discovery', 'Port Scan', 'Service Detection', 'OS Detection', 'Web Assessment', 'SSL Assessment', 'Authenticated Windows Audit', 'Authenticated Linux Audit'
-  status: 'Executed' | 'Skipped' | 'Failed';
+  moduleName: string; // e.g. 'Host Discovery', 'Nmap Port Scan', 'Service Versioning', 'OS Detection', 'Nikto Web Assessment', 'WhatWeb Tech Scan', 'SSL/TLS Assessment', 'DNS Lookup', 'WHOIS Lookup', 'Authenticated Windows Audit', 'Authenticated Linux Audit'
+  status: 'Executed' | 'Skipped' | 'Failed' | 'Module unavailable';
+  executed?: boolean;
+  startTime?: string;
+  endTime?: string;
+  executionTimeMs?: number;
+  exitCode?: number | string;
   reason?: string;
   commandsRun?: string[];
   hostExecutedOn?: string;
   rawOutput?: string;
   parsedSummary?: string;
+  parsedResults?: string;
   findingsCount?: number;
 }
 
