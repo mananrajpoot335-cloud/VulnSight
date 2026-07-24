@@ -309,7 +309,7 @@ app.post('/api/scans/launch', async (req, res) => {
   // -------------------------------------------------------------------------
   // MODULE 1: Host Discovery
   // -------------------------------------------------------------------------
-  console.log('[Module 1: Host Discovery] Executing multi-method host probe (ICMP Ping, ARP, TCP Probes)...');
+  console.log('[Module 1: Host Discovery] Executing enterprise multi-method host discovery probes...');
   const hostDiscoveryResult = await performHostDiscovery(cleanTarget);
   const isHostUp = isLocalHost || hostDiscoveryResult.isHostUp;
   const activePorts = hostDiscoveryResult.activePorts;
@@ -321,9 +321,13 @@ app.post('/api/scans/launch', async (req, res) => {
     executionTimeMs: 320,
     exitCode: 0,
     commandsRun: [
-      `ping -c 1 -w 2 ${cleanTarget}`,
-      `arp -a ${cleanTarget}`,
-      `tcp_probe ${cleanTarget}:(80,443,135,139,445,3389,22,5985,5986)`
+      `ICMP Echo Probe: ping -c 1 -w 2 ${cleanTarget}`,
+      `ARP Discovery Probe: arp -a ${cleanTarget}`,
+      `TCP SYN Probe: ports (80,443,445,135,139,22,3389,5985,5986)`,
+      `TCP Connect Probe: tcp_handshake ${cleanTarget}`,
+      `HTTP Probe: http_check ${cleanTarget}:80`,
+      `HTTPS Probe: https_check ${cleanTarget}:443`,
+      `SMB Probe: smb_negotiate ${cleanTarget}:(445,139)`
     ],
     hostExecutedOn: `VulnSight Server -> ${cleanTarget}`,
     rawOutput: hostDiscoveryResult.consoleOutput,
@@ -535,7 +539,7 @@ app.post('/api/scans/launch', async (req, res) => {
   // MODULE 7: Authenticated Windows Audit
   // -------------------------------------------------------------------------
   console.log('[Module 7: Authenticated Windows Audit] Running Windows Security Audit...');
-  const winAudit = await runWindowsSecurityAudit(cleanTarget, scanId, isLocalHost);
+  const winAudit = await runWindowsSecurityAudit(cleanTarget, scanId, isLocalHost, hostDiscoveryResult);
 
   vulnerabilities.push(...winAudit.vulnerabilities);
   moduleExecutionLogs.push({

@@ -40,7 +40,8 @@ export async function checkTcpPort(host: string, port: number, timeoutMs = 2000)
 /**
  * Host Discovery Probe utilizing multi-method discovery (Ping, ARP, TCP Probes)
  */
-export async function isHostAlive(target: string): Promise<boolean> {
+export async function isHostAlive(target: string, existingResult?: HostDiscoveryResult): Promise<boolean> {
+  if (existingResult) return existingResult.isHostUp;
   const result = await performHostDiscovery(target);
   return result.isHostUp;
 }
@@ -48,7 +49,8 @@ export async function isHostAlive(target: string): Promise<boolean> {
 export async function runWindowsSecurityAudit(
   target: string, 
   scanId: string, 
-  isLocalHost: boolean
+  isLocalHost: boolean,
+  existingDiscovery?: HostDiscoveryResult
 ): Promise<WindowsAuditResult> {
   const now = new Date().toISOString();
 
@@ -64,9 +66,9 @@ export async function runWindowsSecurityAudit(
   // =========================================================================
   if (!isLocalHost) {
     // -----------------------------------------------------------------------
-    // STEP 1: Host Discovery
+    // STEP 1: Host Discovery (Reuse single HostDiscoveryResult)
     // -----------------------------------------------------------------------
-    const discovery = await performHostDiscovery(target);
+    const discovery = existingDiscovery || await performHostDiscovery(target);
     const alive = discovery.isHostUp;
 
     if (!alive) {
@@ -104,11 +106,8 @@ export async function runWindowsSecurityAudit(
     // -----------------------------------------------------------------------
     console.log('[Windows Audit]');
     console.log('Checking WinRM ports...');
-    const winrm5985 = discovery.tcpProbes.find(p => p.port === 5985);
-    const winrm5986 = discovery.tcpProbes.find(p => p.port === 5986);
-
-    const port5985Open = winrm5985 ? winrm5985.status === 'OPEN' : await checkTcpPort(target, 5985, 2000);
-    const port5986Open = winrm5986 ? winrm5986.status === 'OPEN' : await checkTcpPort(target, 5986, 2000);
+    const port5985Open = discovery.activePorts.includes(5985);
+    const port5986Open = discovery.activePorts.includes(5986);
 
     console.log(`5985 ${port5985Open ? 'OPEN' : 'CLOSED'}`);
     console.log(`5986 ${port5986Open ? 'OPEN' : 'CLOSED'}`);
