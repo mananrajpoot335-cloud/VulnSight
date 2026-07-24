@@ -1,6 +1,7 @@
 import net from 'net';
 import { execSync } from 'child_process';
 import { Vulnerability, ModuleExecutionLog } from '../src/types.js';
+import { performHostDiscovery, HostDiscoveryResult } from './hostDiscovery.js';
 
 export interface WindowsAuditResult {
   isWindowsTarget: boolean;
@@ -37,12 +38,11 @@ export async function checkTcpPort(host: string, port: number, timeoutMs = 2000)
 }
 
 /**
- * Host Discovery Probe
+ * Host Discovery Probe utilizing multi-method discovery (Ping, ARP, TCP Probes)
  */
-export async function isHostAlive(target: string, timeoutMs = 2000): Promise<boolean> {
-  const probePorts = [80, 443, 135, 445, 3389, 22, 5985, 5986, 8080];
-  const results = await Promise.all(probePorts.map(p => checkTcpPort(target, p, timeoutMs)));
-  return results.some(r => r === true);
+export async function isHostAlive(target: string): Promise<boolean> {
+  const result = await performHostDiscovery(target);
+  return result.isHostUp;
 }
 
 export async function runWindowsSecurityAudit(
@@ -66,16 +66,16 @@ export async function runWindowsSecurityAudit(
     // -----------------------------------------------------------------------
     // STEP 1: Host Discovery
     // -----------------------------------------------------------------------
-    const alive = await isHostAlive(target);
+    const discovery = await performHostDiscovery(target);
+    const alive = discovery.isHostUp;
+
     if (!alive) {
-      console.log('[Windows Audit]');
-      console.log(`Host Discovery: Target ${target} is unreachable.`);
       console.log('Result:');
       console.log('Authenticated assessment skipped.');
       console.log('Reason:');
       console.log('Host unreachable.');
 
-      rawLogs += `[STEP 1 - Host Discovery]: Target ${target} is unreachable / offline.\n`;
+      rawLogs += `[STEP 1 - Host Discovery]\n` + discovery.consoleOutput + '\n';
       rawLogs += `Result: Authenticated assessment skipped.\nReason: Host unreachable.\n`;
 
       return {
@@ -90,7 +90,7 @@ export async function runWindowsSecurityAudit(
           moduleName: 'Authenticated Windows Audit',
           status: 'Skipped',
           reason: 'Host unreachable.',
-          commandsRun: [`tcp_connect_probe ${target}`],
+          commandsRun: [`multi_method_discovery ${target}`],
           hostExecutedOn: `Remote Host (${target})`,
           rawOutput: rawLogs,
           parsedSummary: `Target ${target} is unreachable. Authenticated Windows Audit skipped.`,
@@ -104,8 +104,11 @@ export async function runWindowsSecurityAudit(
     // -----------------------------------------------------------------------
     console.log('[Windows Audit]');
     console.log('Checking WinRM ports...');
-    const port5985Open = await checkTcpPort(target, 5985, 2000);
-    const port5986Open = await checkTcpPort(target, 5986, 2000);
+    const winrm5985 = discovery.tcpProbes.find(p => p.port === 5985);
+    const winrm5986 = discovery.tcpProbes.find(p => p.port === 5986);
+
+    const port5985Open = winrm5985 ? winrm5985.status === 'OPEN' : await checkTcpPort(target, 5985, 2000);
+    const port5986Open = winrm5986 ? winrm5986.status === 'OPEN' : await checkTcpPort(target, 5986, 2000);
 
     console.log(`5985 ${port5985Open ? 'OPEN' : 'CLOSED'}`);
     console.log(`5986 ${port5986Open ? 'OPEN' : 'CLOSED'}`);

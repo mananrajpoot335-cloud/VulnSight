@@ -9,6 +9,7 @@ import { GoogleGenAI } from '@google/genai';
 import { generateDynamicRemediation } from './server/remediationEngine.js';
 import { runWindowsSecurityAudit } from './server/windowsAuditEngine.js';
 import { performDomainAssessment, classifyTarget } from './server/domainLookup.js';
+import { performHostDiscovery } from './server/hostDiscovery.js';
 import { ModuleExecutionLog, ScanDiagnostics, Vulnerability } from './src/types.js';
 
 dotenv.config();
@@ -308,28 +309,22 @@ app.post('/api/scans/launch', async (req, res) => {
   // -------------------------------------------------------------------------
   // MODULE 1: Host Discovery
   // -------------------------------------------------------------------------
-  console.log('[Module 1: Host Discovery] Executing TCP SYN / Ping Probe...');
-  let isHostUp = false;
-  let activePorts: number[] = [];
-
-  const probePorts = [22, 80, 135, 139, 443, 445, 3389, 5985, 5986, 8080];
-  const portCheckResults = await Promise.all(
-    probePorts.map(async (p) => {
-      const isOpen = await checkTcpPort(cleanTarget, p);
-      return { port: p, isOpen };
-    })
-  );
-
-  activePorts = portCheckResults.filter(r => r.isOpen).map(r => r.port);
-  isHostUp = isLocalHost || activePorts.length > 0;
+  console.log('[Module 1: Host Discovery] Executing multi-method host probe (ICMP Ping, ARP, TCP Probes)...');
+  const hostDiscoveryResult = await performHostDiscovery(cleanTarget);
+  const isHostUp = isLocalHost || hostDiscoveryResult.isHostUp;
+  const activePorts = hostDiscoveryResult.activePorts;
 
   moduleExecutionLogs.push({
     moduleName: 'Host Discovery',
     status: 'Executed',
-    commandsRun: [`ping -c 2 ${cleanTarget}`, `tcp_connect_scan ${cleanTarget}:(22,80,135,139,443,445,3389,5985,5986,8080)`],
+    commandsRun: [
+      `ping -c 1 -w 2 ${cleanTarget}`,
+      `arp -a ${cleanTarget}`,
+      `tcp_probe ${cleanTarget}:(80,443,135,139,445,3389,22,5985,5986)`
+    ],
     hostExecutedOn: `VulnSight Server -> ${cleanTarget}`,
-    rawOutput: `Host Discovery Report for ${cleanTarget}:\nStatus: ${isHostUp ? 'UP' : 'DOWN/Filtered'}\nDiscovered Active Ports: [${activePorts.join(', ')}]`,
-    parsedSummary: `Host ${cleanTarget} is ${isHostUp ? 'UP' : 'Filtered/Down'}. ${activePorts.length} active port(s) detected.`,
+    rawOutput: hostDiscoveryResult.consoleOutput,
+    parsedSummary: hostDiscoveryResult.summaryReason,
     findingsCount: 0
   });
 
@@ -337,12 +332,13 @@ app.post('/api/scans/launch', async (req, res) => {
   // MODULE 2: Port Scan
   // -------------------------------------------------------------------------
   console.log('[Module 2: Port Scan] Querying listening services...');
+  const scannedPortsList = [22, 80, 135, 139, 443, 445, 3389, 5985, 5986, 8080];
   moduleExecutionLogs.push({
     moduleName: 'Port Scan',
     status: 'Executed',
     commandsRun: [`nmap -sS -p 22,80,135,139,443,445,3389,5985,5986,8080 ${cleanTarget}`],
     hostExecutedOn: `VulnSight Server -> ${cleanTarget}`,
-    rawOutput: `Nmap SYN Port Scan Result:\n` + probePorts.map(p => `${p}/tcp  ${activePorts.includes(p) ? 'open  ' : 'closed'} `).join('\n'),
+    rawOutput: `Nmap SYN Port Scan Result:\n` + scannedPortsList.map(p => `${p}/tcp  ${activePorts.includes(p) ? 'open  ' : 'closed'} `).join('\n'),
     parsedSummary: `Scanned 10 top enterprise service ports. Found ${activePorts.length} open port(s).`,
     findingsCount: 0
   });
