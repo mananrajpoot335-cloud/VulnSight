@@ -9,7 +9,19 @@ interface DomainAssessmentViewProps {
 }
 
 export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan }) => {
-  const assessment: DomainAssessmentData = scan.domainAssessment || {};
+  if (!scan.domainAssessment) {
+    return (
+      <div className="bg-[#1e293b] border border-[#334155] rounded-xl p-8 text-center space-y-4 shadow-xl">
+        <Shield className="w-10 h-10 text-[#3b82f6] mx-auto" />
+        <h3 className="text-base font-bold text-[#f8fafc]">Domain Assessment Not Applicable</h3>
+        <p className="text-xs text-[#94a3b8] max-w-md mx-auto">
+          Target <code className="text-[#3b82f6] font-mono">{scan.target}</code> is a Private LAN IP (RFC 1918) address. Public Domain Reconnaissance (WHOIS, DNSSEC, RDAP, Email Security) is skipped for private internal networks.
+        </p>
+      </div>
+    );
+  }
+
+  const assessment: DomainAssessmentData = scan.domainAssessment;
   const { targetType, targetTypeLabel, skipReason, domainInfo, dnsRecords, ipInfo, webServer, sslDetails, emailSecurity } = assessment;
 
   // Helper for rendering values or "Not Available"

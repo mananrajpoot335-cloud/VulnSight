@@ -122,8 +122,9 @@ export const DeveloperDiagnostics: React.FC<DeveloperDiagnosticsProps> = ({ scan
   ];
 
   const filteredModules = modulesList.filter(m => {
-    if (filterModule === 'executed' && !m.executed) return false;
-    if (filterModule === 'skipped' && m.executed) return false;
+    const isExec = typeof m.executed === 'boolean' ? m.executed : (m.status === 'Executed');
+    if (filterModule === 'executed' && !isExec) return false;
+    if (filterModule === 'skipped' && isExec) return false;
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       return (
@@ -195,10 +196,10 @@ export const DeveloperDiagnostics: React.FC<DeveloperDiagnosticsProps> = ({ scan
             <div className="bg-[#1e293b] border border-[#334155] rounded-xl p-4 space-y-1">
               <div className="text-[10px] uppercase font-bold text-[#64748b] tracking-wider">Modules Executed</div>
               <div className="text-sm font-bold text-[#10b981]">
-                {modulesList.filter(m => m.executed).length} / {modulesList.length} Modules
+                {modulesList.filter(m => typeof m.executed === 'boolean' ? m.executed : (m.status === 'Executed')).length} / {modulesList.length} Modules
               </div>
               <div className="text-[11px] text-[#94a3b8]">
-                {modulesList.filter(m => !m.executed).length} Unavailable / Skipped
+                {modulesList.filter(m => !(typeof m.executed === 'boolean' ? m.executed : (m.status === 'Executed'))).length} Unavailable / Skipped
               </div>
             </div>
 
@@ -246,29 +247,31 @@ export const DeveloperDiagnostics: React.FC<DeveloperDiagnosticsProps> = ({ scan
             </div>
 
             <div className="space-y-4">
-              {filteredModules.map((m, idx) => (
-                <div
-                  key={idx}
-                  className="bg-[#0f172a] border border-[#334155] rounded-xl p-4 space-y-3"
-                >
-                  {/* Card Header with Required Telemetry Fields */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1e293b] pb-3">
-                    <div className="flex items-center space-x-3">
-                      <span className={`w-2.5 h-2.5 rounded-full ${
-                        m.executed ? 'bg-[#10b981]' : 'bg-[#ef4444]'
-                      }`} />
-                      <span className="font-bold text-sm text-[#f8fafc]">{m.moduleName}</span>
-                      
-                      {/* Executed Badge */}
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center space-x-1 ${
-                        m.executed 
-                          ? 'bg-[#10b981]/20 text-[#10b981] border border-[#10b981]/30' 
-                          : 'bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30'
-                      }`}>
-                        {m.executed ? <Check className="w-3 h-3 mr-0.5 inline" /> : <X className="w-3 h-3 mr-0.5 inline" />}
-                        Executed: {m.executed ? 'Yes' : 'No'}
-                      </span>
-                    </div>
+              {filteredModules.map((m, idx) => {
+                const isExec = typeof m.executed === 'boolean' ? m.executed : (m.status === 'Executed');
+                return (
+                  <div
+                    key={idx}
+                    className="bg-[#0f172a] border border-[#334155] rounded-xl p-4 space-y-3"
+                  >
+                    {/* Card Header with Required Telemetry Fields */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1e293b] pb-3">
+                      <div className="flex items-center space-x-3">
+                        <span className={`w-2.5 h-2.5 rounded-full ${
+                          isExec ? 'bg-[#10b981]' : 'bg-[#ef4444]'
+                        }`} />
+                        <span className="font-bold text-sm text-[#f8fafc]">{m.moduleName}</span>
+                        
+                        {/* Executed Badge */}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center space-x-1 ${
+                          isExec 
+                            ? 'bg-[#10b981]/20 text-[#10b981] border border-[#10b981]/30' 
+                            : 'bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30'
+                        }`}>
+                          {isExec ? <Check className="w-3 h-3 mr-0.5 inline" /> : <X className="w-3 h-3 mr-0.5 inline" />}
+                          Executed: {isExec ? 'Yes' : 'No'}
+                        </span>
+                      </div>
 
                     {/* Telemetry Pills: Execution Time & Exit Code */}
                     <div className="flex items-center space-x-3 text-xs font-mono">
@@ -317,11 +320,12 @@ export const DeveloperDiagnostics: React.FC<DeveloperDiagnosticsProps> = ({ scan
                   <div className="bg-[#1e293b]/70 border border-[#334155]/60 p-3 rounded-lg space-y-1">
                     <div className="text-[10px] uppercase font-bold text-[#3b82f6]">Parsed Results:</div>
                     <div className="text-xs text-[#f8fafc] font-medium">
-                      {m.parsedResults || m.parsedSummary || (m.executed ? 'No actionable items extracted.' : 'Module unavailable')}
+                      {m.parsedResults || m.parsedSummary || (isExec ? 'No actionable items extracted.' : 'Module unavailable')}
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </>

@@ -6,6 +6,8 @@ export interface TcpProbeDetail {
   port: number;
   status: 'OPEN' | 'CLOSED' | 'TIMEOUT' | 'UNREACHABLE' | 'ERROR';
   detail?: string;
+  durationMs?: number;
+  log?: string;
 }
 
 export interface HostDiscoveryResult {
@@ -140,46 +142,109 @@ async function runArpLookup(target: string): Promise<{ passed: boolean; label: s
  */
 function probeSingleTcpPort(host: string, port: number, timeoutMs = 2000): Promise<TcpProbeDetail> {
   return new Promise((resolve) => {
+    const startTime = Date.now();
     const socket = new net.Socket();
     let isResolved = false;
+
+    console.log(`[TCP Probe] Connection attempt to ${host}:${port}...`);
 
     socket.setTimeout(timeoutMs);
 
     socket.on('connect', () => {
       if (!isResolved) {
         isResolved = true;
+        const durationMs = Date.now() - startTime;
         socket.destroy();
-        resolve({ port, status: 'OPEN', detail: 'Connection established' });
+        console.log(`[TCP Probe] Connection established to ${host}:${port} in ${durationMs}ms`);
+        resolve({
+          port,
+          status: 'OPEN',
+          detail: 'Connection established',
+          durationMs,
+          log: `Attempt ${host}:${port} -> Connection established in ${durationMs}ms`
+        });
       }
     });
 
     socket.on('timeout', () => {
       if (!isResolved) {
         isResolved = true;
+        const durationMs = Date.now() - startTime;
         socket.destroy();
-        resolve({ port, status: 'TIMEOUT', detail: 'Connection timed out' });
+        console.log(`[TCP Probe] Socket timeout on ${host}:${port} after ${durationMs}ms`);
+        resolve({
+          port,
+          status: 'TIMEOUT',
+          detail: 'Socket timeout (filtered / no reply)',
+          durationMs,
+          log: `Attempt ${host}:${port} -> Socket timeout after ${durationMs}ms`
+        });
       }
     });
 
     socket.on('error', (err: any) => {
       if (!isResolved) {
         isResolved = true;
+        const durationMs = Date.now() - startTime;
         socket.destroy();
         const code = err.code || '';
         if (code === 'ECONNREFUSED') {
           // Target active TCP RST response -> Host is UP! Port is CLOSED.
-          resolve({ port, status: 'CLOSED', detail: 'Connection refused (TCP RST)' });
+          console.log(`[TCP Probe] Connection refused on ${host}:${port} in ${durationMs}ms (TCP RST)`);
+          resolve({
+            port,
+            status: 'CLOSED',
+            detail: 'Connection refused (TCP RST packet received - Host is UP)',
+            durationMs,
+            log: `Attempt ${host}:${port} -> Connection refused in ${durationMs}ms`
+          });
         } else if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-          resolve({ port, status: 'UNREACHABLE', detail: 'Host or network unreachable' });
+          console.log(`[TCP Probe] Host/network unreachable on ${host}:${port} in ${durationMs}ms`);
+          resolve({
+            port,
+            status: 'UNREACHABLE',
+            detail: 'Host or network unreachable',
+            durationMs,
+            log: `Attempt ${host}:${port} -> ${code} in ${durationMs}ms`
+          });
         } else if (code === 'ETIMEDOUT') {
-          resolve({ port, status: 'TIMEOUT', detail: 'Socket connection timed out' });
+          console.log(`[TCP Probe] Socket connection timed out on ${host}:${port} after ${durationMs}ms`);
+          resolve({
+            port,
+            status: 'TIMEOUT',
+            detail: 'Socket connection timed out',
+            durationMs,
+            log: `Attempt ${host}:${port} -> ETIMEDOUT after ${durationMs}ms`
+          });
         } else {
-          resolve({ port, status: 'ERROR', detail: err.message || code });
+          console.log(`[TCP Probe] Connection error (${err.message || code}) on ${host}:${port} in ${durationMs}ms`);
+          resolve({
+            port,
+            status: 'ERROR',
+            detail: err.message || code,
+            durationMs,
+            log: `Attempt ${host}:${port} -> Error (${err.message || code}) in ${durationMs}ms`
+          });
         }
       }
     });
 
-    socket.connect(port, host);
+    try {
+      socket.connect(port, host);
+    } catch (e: any) {
+      if (!isResolved) {
+        isResolved = true;
+        const durationMs = Date.now() - startTime;
+        console.log(`[TCP Probe] Exception on ${host}:${port}: ${e.message}`);
+        resolve({
+          port,
+          status: 'ERROR',
+          detail: e.message,
+          durationMs,
+          log: `Attempt ${host}:${port} -> Exception: ${e.message}`
+        });
+      }
+    }
   });
 }
 
@@ -215,7 +280,8 @@ export async function performHostDiscovery(target: string): Promise<HostDiscover
   consoleLines.push(`ARP.........${arpResult.label}`);
   for (const probe of tcpProbes) {
     const padPort = `TCP ${probe.port}`.padEnd(12, '.');
-    consoleLines.push(`${padPort}${probe.status}`);
+    const durStr = probe.durationMs !== undefined ? `(${probe.durationMs}ms)` : '';
+    consoleLines.push(`${padPort}${probe.status} ${durStr} - ${probe.detail || ''}`);
   }
   consoleLines.push('');
   consoleLines.push('Final Result:');
