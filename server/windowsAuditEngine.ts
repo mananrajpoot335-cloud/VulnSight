@@ -126,10 +126,10 @@ export async function runWindowsSecurityAudit(
       console.log('Reason:');
       console.log('WinRM unavailable.');
 
-      const skipReason = "WinRM service unavailable. No authentication channel exists.";
+      const skipReason = "WinRM service unavailable (Ports 5985/5986 closed). Remote PowerShell management authentication skipped. Unauthenticated network service assessment performed.";
 
-      rawLogs += `\n[STEP 3 - Decision]\nBoth WinRM ports (5985, 5986) are CLOSED.\nNo remote commands or authentication attempts were made.\n`;
-      rawLogs += `Result: Authenticated assessment skipped.\nReason: ${skipReason}\n`;
+      rawLogs += `\n[STEP 3 - Decision]\nBoth WinRM ports (5985, 5986) are CLOSED.\nNo remote PowerShell commands or WinRM authentication attempts were made.\n`;
+      rawLogs += `Result: Authenticated WinRM assessment skipped. Active network services (SMB 445 / MSRPC 135) assessed via unauthenticated network probes.\nReason: ${skipReason}\n`;
 
       return {
         isWindowsTarget: false,
