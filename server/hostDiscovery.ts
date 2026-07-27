@@ -306,26 +306,25 @@ export async function performHostDiscovery(target: string): Promise<HostDiscover
   // Extract open ports and TCP responses
   const activePorts = portProbes.filter(p => p.status === 'OPEN').map(p => p.port);
   const closedPorts = portProbes.filter(p => p.status === 'CLOSED').map(p => p.port);
-  const tcpResponded = activePorts.length > 0 || closedPorts.length > 0;
 
   // 1. TCP SYN / Socket Response Probe Log
   const tcpSynDuration = Math.max(...portProbes.map(p => p.durationMs), 0);
-  const tcpSynResult: ProbeLog = tcpResponded ? {
+  const tcpSynResult: ProbeLog = activePorts.length > 0 ? {
     probe: 'TCP SYN Probe',
     result: 'PASS',
     durationMs: tcpSynDuration,
-    evidence: activePorts.length > 0 
-      ? `Open TCP ports detected: [${activePorts.join(', ')}]`
-      : `Connection refused (TCP RST received) on closed ports: [${closedPorts.join(', ')}]`,
-    reason: activePorts.length > 0 
-      ? 'Target host responded with SYN-ACK on open service ports.' 
-      : 'Target host responded with TCP RST packet (Host TCP stack is online).'
+    evidence: `Open TCP ports detected: [${activePorts.join(', ')}]`,
+    reason: 'Target host responded with SYN-ACK on open service ports.'
   } : {
     probe: 'TCP SYN Probe',
     result: 'FAIL',
     durationMs: tcpSynDuration,
-    evidence: `All candidate TCP ports (${probePorts.join(',')}) timed out or unreachable`,
-    reason: 'No TCP response (SYN-ACK or RST) received from any tested port.'
+    evidence: closedPorts.length > 0
+      ? `Connection refused / closed on ports: [${closedPorts.join(', ')}]`
+      : `All candidate TCP ports (${probePorts.join(',')}) timed out or unreachable`,
+    reason: closedPorts.length > 0
+      ? 'Target host closed all probed ports (No active listening services).'
+      : 'No response received from target host.'
   };
 
   // 2. TCP Connect Probe Log
@@ -335,91 +334,72 @@ export async function performHostDiscovery(target: string): Promise<HostDiscover
     durationMs: tcpSynDuration,
     evidence: `Full 3-way handshake established on port(s): [${activePorts.join(', ')}]`,
     reason: 'Full TCP connection established successfully.'
-  } : (closedPorts.length > 0 ? {
-    probe: 'TCP Connect',
-    result: 'PASS',
-    durationMs: tcpSynDuration,
-    evidence: `TCP connection refused on port(s): [${closedPorts.join(', ')}]`,
-    reason: 'Target actively rejected connection with TCP RST (Host is UP).'
   } : {
     probe: 'TCP Connect',
     result: 'FAIL',
     durationMs: tcpSynDuration,
-    evidence: `Socket timeout on all TCP connect attempts to ${target}`,
-    reason: 'No active TCP connection could be established.'
-  });
+    evidence: `No open TCP ports found on ${target}`,
+    reason: 'No open TCP port accepted 3-way connection.'
+  };
 
   // 3. HTTP Probe Log (Port 80)
   const httpPort = portProbes.find(p => p.port === 80);
-  const httpResult: ProbeLog = (httpPort && (httpPort.status === 'OPEN' || httpPort.status === 'CLOSED')) ? {
+  const httpResult: ProbeLog = (httpPort && httpPort.status === 'OPEN') ? {
     probe: 'HTTP Probe',
     result: 'PASS',
     durationMs: httpPort.durationMs,
-    evidence: httpPort.status === 'OPEN' 
-      ? `HTTP Port 80 OPEN on ${target} (${httpPort.durationMs}ms)`
-      : `HTTP Port 80 CLOSED on ${target} - TCP RST received (${httpPort.durationMs}ms)`,
-    reason: httpPort.status === 'OPEN'
-      ? 'HTTP web service active and listening on port 80.'
-      : 'Host network stack replied to HTTP port 80 probe with TCP RST.'
+    evidence: `HTTP Port 80 OPEN on ${target} (${httpPort.durationMs}ms)`,
+    reason: 'HTTP web service active and listening on port 80.'
   } : {
     probe: 'HTTP Probe',
     result: 'FAIL',
     durationMs: httpPort ? httpPort.durationMs : 2000,
     evidence: `Port 80 ${httpPort ? httpPort.status : 'TIMEOUT'}`,
-    reason: 'HTTP port 80 did not respond or timed out.'
+    reason: 'HTTP port 80 did not respond or is closed.'
   };
 
   // 4. HTTPS Probe Log (Port 443)
   const httpsPort = portProbes.find(p => p.port === 443);
-  const httpsResult: ProbeLog = (httpsPort && (httpsPort.status === 'OPEN' || httpsPort.status === 'CLOSED')) ? {
+  const httpsResult: ProbeLog = (httpsPort && httpsPort.status === 'OPEN') ? {
     probe: 'HTTPS Probe',
     result: 'PASS',
     durationMs: httpsPort.durationMs,
-    evidence: httpsPort.status === 'OPEN' 
-      ? `HTTPS Port 443 OPEN on ${target} (${httpsPort.durationMs}ms)`
-      : `HTTPS Port 443 CLOSED on ${target} - TCP RST received (${httpsPort.durationMs}ms)`,
-    reason: httpsPort.status === 'OPEN'
-      ? 'HTTPS SSL/TLS service active and listening on port 443.'
-      : 'Host network stack replied to HTTPS port 443 probe with TCP RST.'
+    evidence: `HTTPS Port 443 OPEN on ${target} (${httpsPort.durationMs}ms)`,
+    reason: 'HTTPS SSL/TLS service active and listening on port 443.'
   } : {
     probe: 'HTTPS Probe',
     result: 'FAIL',
     durationMs: httpsPort ? httpsPort.durationMs : 2000,
     evidence: `Port 443 ${httpsPort ? httpsPort.status : 'TIMEOUT'}`,
-    reason: 'HTTPS port 443 did not respond or timed out.'
+    reason: 'HTTPS port 443 did not respond or is closed.'
   };
 
   // 5. SMB Probe Log (Port 445 or 139)
   const smbPort445 = portProbes.find(p => p.port === 445);
   const smbPort139 = portProbes.find(p => p.port === 139);
-  const smbActive = (smbPort445 && (smbPort445.status === 'OPEN' || smbPort445.status === 'CLOSED')) ||
-                    (smbPort139 && (smbPort139.status === 'OPEN' || smbPort139.status === 'CLOSED'));
+  const smbOpen = (smbPort445 && smbPort445.status === 'OPEN') || (smbPort139 && smbPort139.status === 'OPEN');
 
-  const smbResult: ProbeLog = smbActive ? {
+  const smbResult: ProbeLog = smbOpen ? {
     probe: 'SMB Probe',
     result: 'PASS',
     durationMs: Math.min(smbPort445?.durationMs || 9999, smbPort139?.durationMs || 9999),
-    evidence: `SMB ports 445/139 active (Port 445: ${smbPort445?.status || 'N/A'}, Port 139: ${smbPort139?.status || 'N/A'})`,
+    evidence: `SMB port open (Port 445: ${smbPort445?.status || 'N/A'}, Port 139: ${smbPort139?.status || 'N/A'})`,
     reason: 'Target host responded to SMB file sharing port probes.'
   } : {
     probe: 'SMB Probe',
     result: 'FAIL',
     durationMs: smbPort445 ? smbPort445.durationMs : 2000,
-    evidence: `SMB ports 445/139 timed out / filtered on ${target}`,
-    reason: 'No response on SMB file sharing ports 445 or 139.'
+    evidence: `SMB ports 445/139 timed out / closed on ${target}`,
+    reason: 'No open response on SMB file sharing ports 445 or 139.'
   };
 
   // =========================================================================
-  // ENTERPRISE DECISION LOGIC:
-  // Host is REACHABLE if ANY of the discovery methods succeeds!
+  // STRICT DECISION LOGIC:
+  // Host is ONLY REACHABLE if ICMP succeeds, ARP resolves, or >= 1 TCP port is OPEN!
   // =========================================================================
   const isHostUp = icmpResult.result === 'PASS' ||
                    arpResult.result === 'PASS' ||
-                   tcpSynResult.result === 'PASS' ||
-                   tcpConnectResult.result === 'PASS' ||
-                   httpResult.result === 'PASS' ||
-                   httpsResult.result === 'PASS' ||
-                   smbResult.result === 'PASS';
+                   activePorts.length > 0;
 
   // Build list of success reasons
   const passReasons: string[] = [];
