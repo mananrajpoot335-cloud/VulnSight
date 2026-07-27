@@ -207,34 +207,48 @@ export const DashboardOverview: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* AI Remediation Insight Box (from Sophisticated Dark Theme) */}
-        <div className="bg-gradient-to-br from-[#3b82f6]/10 to-[#9333ea]/10 border border-[#3b82f6]/30 rounded-lg p-5 flex flex-col justify-between relative">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-xs font-semibold uppercase tracking-wider text-[#a855f7] flex items-center space-x-1.5">
-                <span className="w-2 h-2 rounded-full bg-[#a855f7] animate-pulse" />
-                <span>AI Remediation Insight</span>
+        {/* AI Remediation Insight Box */}
+        {(() => {
+          const topVuln = vulnerabilities.find(v => v.severity === 'Critical') || vulnerabilities[0];
+          return (
+            <div className="bg-gradient-to-br from-[#3b82f6]/10 to-[#9333ea]/10 border border-[#3b82f6]/30 rounded-lg p-5 flex flex-col justify-between relative">
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-[#a855f7] flex items-center space-x-1.5">
+                    <span className="w-2 h-2 rounded-full bg-[#a855f7] animate-pulse" />
+                    <span>AI Remediation Insight</span>
+                  </div>
+                  <ShieldAlert className="w-4 h-4 text-[#a855f7]" />
+                </div>
+
+                {topVuln ? (
+                  <div className="text-xs leading-relaxed text-[#e2e8f0] space-y-2">
+                    <p>
+                      <strong className="text-white">{topVuln.cveId || topVuln.title}</strong> detected on <strong className="text-white">{topVuln.affectedHost}</strong> ({topVuln.severity} Risk).
+                    </p>
+                    <blockquote className="p-2.5 rounded bg-[#0f172a]/80 border border-[#3b82f6]/20 text-[#94a3b8] italic line-clamp-3">
+                      &quot;{topVuln.remediation?.manualFix || topVuln.recommendation || 'Apply vendor security patch and restrict network access.'}&quot;
+                    </blockquote>
+                  </div>
+                ) : (
+                  <div className="text-xs text-[#94a3b8] italic">
+                    No active vulnerabilities detected. System security posture compliant across scanned targets.
+                  </div>
+                )}
               </div>
-              <ShieldAlert className="w-4 h-4 text-[#a855f7]" />
-            </div>
 
-            <div className="text-xs leading-relaxed text-[#e2e8f0] space-y-2">
-              <p>
-                <strong className="text-white">CVE-2024-21887</strong> detected on <strong className="text-white">WEB-PROD-01</strong>. AI identifies high exploitation risk.
-              </p>
-              <blockquote className="p-2.5 rounded bg-[#0f172a]/80 border border-[#3b82f6]/20 text-[#94a3b8] italic">
-                &quot;Patch to Ivy-9.1.3 immediately or restrict port 443 access to authorized IPs via iptables.&quot;
-              </blockquote>
+              <button
+                onClick={() => {
+                  if (topVuln) onSelectVulnerability(topVuln);
+                  else onNavigateTab('vulnerabilities');
+                }}
+                className="mt-4 bg-[#3b82f6] hover:bg-blue-600 text-white font-semibold py-2 px-3 rounded text-xs transition-all w-fit shadow"
+              >
+                {topVuln ? 'Inspect AI Fix →' : 'View Findings →'}
+              </button>
             </div>
-          </div>
-
-          <button
-            onClick={() => onNavigateTab('vulnerabilities')}
-            className="mt-4 bg-[#3b82f6] hover:bg-blue-600 text-white font-semibold py-2 px-3 rounded text-xs transition-all w-fit shadow"
-          >
-            View AI Guide
-          </button>
-        </div>
+          );
+        })()}
       </div>
 
       {/* Recent Critical Vulnerabilities Table & Recent Scans */}

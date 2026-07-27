@@ -513,7 +513,7 @@ app.post('/api/scans/launch', async (req, res) => {
   if (hasSmb || hasMsrpc || hasRdp || hasWinRm) {
     let networkFindingsCount = 0;
 
-    // 1. Windows Defender Firewall Disabled / Ingress Filtering Off
+    // 1. Core Windows Service Exposure Probe
     const exposedServicesList = [
       hasSmb ? 'SMB (TCP 445/139)' : '',
       hasMsrpc ? 'MSRPC (TCP 135)' : '',
@@ -521,43 +521,45 @@ app.post('/api/scans/launch', async (req, res) => {
       hasWinRm ? 'WinRM (TCP 5985/5986)' : ''
     ].filter(Boolean).join(', ');
 
-    networkFindingsCount++;
-    const fwRemediation = generateDynamicRemediation(
-      cleanTarget,
-      hasRdp ? 3389 : (hasSmb ? 445 : 135),
-      'Windows Defender Firewall',
-      'Windows Security Engine',
-      'Windows Defender Firewall Turned Off / Ingress Filtering Disabled',
-      'High',
-      'CWE-284',
-      `Active network probes connected to core Windows services (${exposedServicesList}) on target host ${cleanTarget}. Inbound firewall rule filtering is inactive or disabled.`
-    );
+    // Only flag as Service Exposure if port is open, without falsely declaring firewall profile is OFF on remote targets
+    if (hasSmb || hasMsrpc || hasRdp) {
+      networkFindingsCount++;
+      const svcRemediation = generateDynamicRemediation(
+        cleanTarget,
+        hasRdp ? 3389 : (hasSmb ? 445 : 135),
+        'Windows Management Services',
+        'Windows Network Services',
+        'Exposed Internal Windows Infrastructure Services',
+        'Medium',
+        'CWE-284',
+        `Active network probes connected to Windows infrastructure services (${exposedServicesList}) on target host ${cleanTarget}.`
+      );
 
-    vulnerabilities.push({
-      id: `vuln-${Date.now()}-win-fw-ingress`,
-      title: 'Windows Defender Firewall Turned Off / Ingress Filtering Disabled',
-      description: `Target host ${cleanTarget} has Windows Defender Firewall disabled or configured with permissive rules, allowing unfiltered incoming connections to core Windows services (${exposedServicesList}).`,
-      severity: 'High',
-      cvssScore: 8.5,
-      cveId: 'CWE-284',
-      affectedHost: cleanTarget,
-      affectedPort: hasRdp ? 3389 : (hasSmb ? 445 : 135),
-      service: 'Windows Defender Firewall (mpssvc)',
-      evidence: `Active TCP connections succeeded on ports (${exposedServicesList}) on target ${cleanTarget}. No inbound network firewall rule blocked these internal management interfaces.`,
-      riskLevel: 'High',
-      businessImpact: 'Unrestricted network ingress permits lateral movement, automated port scanning, password spraying, and remote service exploitation across the local subnet.',
-      recommendation: 'Enable Windows Defender Firewall for Domain, Private, and Public profiles immediately via PowerShell, Group Policy, or netsh.',
-      references: [
-        'https://learn.microsoft.com/en-us/powershell/module/netsecurity/set-netfirewallprofile',
-        'https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/'
-      ],
-      status: 'Open',
-      findingCategory: 'Network-Based Finding',
-      moduleDiscovered: 'Windows Firewall & Service Exposure Probe',
-      remediation: fwRemediation,
-      detectedAt: now,
-      scanId: scanId
-    });
+      vulnerabilities.push({
+        id: `vuln-${Date.now()}-${Math.floor(Math.random() * 10000)}-win-svc-exp`,
+        title: 'Exposed Internal Windows Infrastructure Services',
+        description: `Target host ${cleanTarget} allows direct inbound network connections to internal Windows management services (${exposedServicesList}).`,
+        severity: 'Medium',
+        cvssScore: 6.8,
+        cveId: 'CWE-284',
+        affectedHost: cleanTarget,
+        affectedPort: hasRdp ? 3389 : (hasSmb ? 445 : 135),
+        service: 'Windows Infrastructure Services',
+        evidence: `Active TCP connections succeeded on ports (${exposedServicesList}) on target ${cleanTarget}.`,
+        riskLevel: 'Medium',
+        businessImpact: 'Directly reachable internal management ports permit lateral movement, automated port scanning, and credential brute-forcing.',
+        recommendation: 'Restrict access to internal management ports using Windows Defender Firewall or subnet ACLs to authorized administrative IP addresses.',
+        references: [
+          'https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/'
+        ],
+        status: 'Open',
+        findingCategory: 'Network-Based Finding',
+        moduleDiscovered: 'Windows Service Exposure Probe',
+        remediation: svcRemediation,
+        detectedAt: now,
+        scanId: scanId
+      });
+    }
 
     if (hasSmb) {
       networkFindingsCount++;

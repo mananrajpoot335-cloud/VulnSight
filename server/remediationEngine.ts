@@ -32,22 +32,236 @@ export function generateDynamicRemediation(
   const targetLower = cleanTarget.toLowerCase();
   const serviceLower = (service || '').toLowerCase();
   const bannerLower = (banner || '').toLowerCase();
+  const titleLower = (vulnTitle || '').toLowerCase();
+  const cveLower = (cveId || '').toLowerCase();
 
   // 1. SERVICE EXISTENCE VERIFICATION GUARD
-  // If port is 0 or service is empty/closed, no remediation is needed
-  if (port === 0 || serviceLower.includes('closed') || serviceLower.includes('filtered')) {
+  if (port === 0 && !titleLower.includes('firewall') && !titleLower.includes('defender') && !titleLower.includes('guest')) {
+    if (serviceLower.includes('closed') || serviceLower.includes('filtered')) {
+      return {
+        detectedTargetPlatform: 'Inactive / Closed Port',
+        rootCause: 'Service port is not listening or is filtered by firewall rules.',
+        technicalExplanation: `The target host ${cleanTarget} does not have an active service listening on port ${port}.`,
+        manualFix: 'No remediation required. The affected service is not installed or active on this target.',
+        rebootRequired: false,
+        estimatedImpact: 'None',
+        references: ['https://nvd.nist.gov/']
+      };
+    }
+  }
+
+  // 2. WINDOWS DEFENDER FIREWALL / INGRESS FILTERING
+  if (titleLower.includes('firewall') || titleLower.includes('ingress filtering') || titleLower.includes('mpssvc')) {
     return {
-      detectedTargetPlatform: 'Inactive / Closed Port',
-      rootCause: 'Service port is not listening or is filtered by firewall rules.',
-      technicalExplanation: `The target host ${cleanTarget} does not have an active service listening on the specified port (${port}).`,
-      manualFix: 'No remediation required. The affected service is not installed or active on this target.',
+      detectedTargetPlatform: 'Microsoft Windows Security Engine (Windows Defender Firewall)',
+      rootCause: 'Windows Defender Firewall profile (Domain, Private, or Public) is turned off or ingress filtering rules are disabled.',
+      technicalExplanation: `Target system ${cleanTarget} has disabled or permissive firewall profiles. Unfiltered network ingress permits unauthorized scanning, lateral movement, and direct exploitation of exposed services.`,
+      manualFix: 'Enable Windows Defender Firewall for Domain, Private, and Public profiles immediately using PowerShell or netsh command line.',
+      powershellCommands: [
+        'Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True'
+      ],
+      cmdCommands: [
+        'netsh advfirewall set allprofiles state on'
+      ],
+      verificationCommands: [
+        'Get-NetFirewallProfile | Select-Object Name, Enabled'
+      ],
+      rollbackSteps: [
+        'Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled False'
+      ],
       rebootRequired: false,
-      estimatedImpact: 'None',
-      references: ['https://nvd.nist.gov/']
+      serviceRestartRequired: 'mpssvc (Windows Defender Firewall)',
+      estimatedImpact: 'Zero Downtime - Enables network packet filtering instantly.',
+      references: [
+        'https://learn.microsoft.com/en-us/powershell/module/netsecurity/set-netfirewallprofile',
+        'https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/'
+      ]
     };
   }
 
-  // 2. NETWORK APPLIANCE / ROUTER DETECTION (Cisco, MikroTik, FortiGate, Huawei, Ruijie, pfSense)
+  // 3. SMB / UNENCRYPTED FILE SHARING / SMB SIGNING
+  if (titleLower.includes('smb') || titleLower.includes('microsoft-ds') || serviceLower.includes('microsoft-ds') || port === 445) {
+    return {
+      detectedTargetPlatform: 'Windows Server / Active Directory (SMB File Sharing - TCP 445/139)',
+      rootCause: 'SMB message signing is not required or legacy unencrypted SMB protocol is enabled.',
+      technicalExplanation: `Target ${cleanTarget} exposes SMB file sharing over TCP port 445 without enforcing mandatory packet signing. Attackers on the local LAN can perform Man-in-the-Middle (MitM) relay attacks or steal session hashes.`,
+      manualFix: 'Enforce SMB packet signing in Group Policy or Windows Registry and disable legacy SMBv1 protocol.',
+      powershellCommands: [
+        'Set-SmbServerConfiguration -RequireSecuritySignature $true -Force',
+        'Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force'
+      ],
+      cmdCommands: [
+        'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 1 /f',
+        'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v SMB1 /t REG_DWORD /d 0 /f'
+      ],
+      registryChanges: [
+        '[HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters]',
+        '"RequireSecuritySignature"=dword:00000001',
+        '"SMB1"=dword:00000000'
+      ],
+      verificationCommands: [
+        'Get-SmbServerConfiguration | Select-Object RequireSecuritySignature, EnableSMB1Protocol'
+      ],
+      rollbackSteps: [
+        'Set-SmbServerConfiguration -RequireSecuritySignature $false -Force'
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'LanmanServer (Server Service)',
+      estimatedImpact: 'Low - Restricts unsigned SMB client negotiations.',
+      references: ['https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/overview-of-smb-signing']
+    };
+  }
+
+  // 4. MSRPC ENDPOINT MAPPER
+  if (titleLower.includes('msrpc') || titleLower.includes('rpc endpoint') || port === 135) {
+    return {
+      detectedTargetPlatform: 'Microsoft Windows RPC Subsystem (TCP 135)',
+      rootCause: 'MSRPC Endpoint Mapper port 135 is open to untrusted network subnets.',
+      technicalExplanation: `Target ${cleanTarget} actively responds to RPC Endpoint Mapper queries on TCP port 135, allowing remote attackers to enumerate registered RPC interfaces, UUIDs, and system endpoints.`,
+      manualFix: 'Restrict access to TCP port 135 using Windows Defender Firewall to authorized management hosts only.',
+      powershellCommands: [
+        'New-NetFirewallRule -DisplayName "Restrict MSRPC Port 135" -Direction Inbound -LocalPort 135 -Protocol TCP -Action Block -RemoteAddress Any'
+      ],
+      cmdCommands: [
+        'netsh advfirewall firewall add rule name="Block MSRPC Ingress" dir=in action=block protocol=TCP localport=135'
+      ],
+      verificationCommands: [
+        'Test-NetConnection -ComputerName localhost -Port 135'
+      ],
+      rollbackSteps: [
+        'Remove-NetFirewallRule -DisplayName "Restrict MSRPC Port 135"'
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'RpcSs (Remote Procedure Call service)',
+      estimatedImpact: 'Zero Downtime - Blocks external RPC mapping while preserving internal RPC communications.',
+      references: ['https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/firewall/configure-rpc-ports']
+    };
+  }
+
+  // 5. REMOTE DESKTOP PROTOCOL (RDP)
+  if (titleLower.includes('rdp') || titleLower.includes('remote desktop') || port === 3389) {
+    return {
+      detectedTargetPlatform: 'Windows Remote Desktop Services (RDP - TCP 3389)',
+      rootCause: 'Remote Desktop Protocol (RDP) service is exposed over the network without Network Level Authentication (NLA) enforcement.',
+      technicalExplanation: `Target host ${cleanTarget} listens for remote desktop connections on TCP port 3389. Directly accessible RDP ports are frequent targets for automated password spraying, credential brute-forcing, and remote desktop exploit attempts.`,
+      manualFix: 'Enforce Network Level Authentication (NLA) for RDP connections, restrict port 3389 via firewall rules, or place RDP behind a VPN.',
+      powershellCommands: [
+        'Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" -Name "UserAuthentication" -Value 1',
+        '(Get-WmiObject -class "Win32_TSGeneralSetting" -Namespace "root\\cimv2\\terminalservices" -Filter "TerminalName=\'RDP-Tcp\'").SetUserAuthenticationRequired(1)'
+      ],
+      cmdCommands: [
+        'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f'
+      ],
+      verificationCommands: [
+        'Get-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" -Name UserAuthentication'
+      ],
+      rollbackSteps: [
+        'Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" -Name "UserAuthentication" -Value 0'
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'TermService (Remote Desktop Services)',
+      estimatedImpact: 'Zero Downtime - Enforces pre-authentication before establishing graphic RDP sessions.',
+      references: ['https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access']
+    };
+  }
+
+  // 6. WINRM REMOTE MANAGEMENT
+  if (titleLower.includes('winrm') || port === 5985 || port === 5986) {
+    return {
+      detectedTargetPlatform: 'Windows Remote Management (WinRM - TCP 5985/5986)',
+      rootCause: 'WinRM HTTP/HTTPS listener exposed to untrusted network subnets.',
+      technicalExplanation: `WinRM management service on ${cleanTarget}:${port} is accessible over the network. Exposed WinRM ports allow remote PowerShell remoting and administrative authentication probes.`,
+      manualFix: 'Restrict WinRM ingress rules to authorized administrator IP addresses in Windows Firewall.',
+      powershellCommands: [
+        'Set-NetFirewallRule -Name "WINRM-HTTP-In-TCP" -RemoteAddress "192.168.1.0/24"'
+      ],
+      verificationCommands: [
+        'Get-NetFirewallRule -Name "WINRM-HTTP-In-TCP"'
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'WinRM service',
+      estimatedImpact: 'Zero Downtime - Restricts remote administrative access.',
+      references: ['https://learn.microsoft.com/en-us/windows/win32/winrm/portal']
+    };
+  }
+
+  // 7. HEARTBLEED / SSL TLS WEAK CIPHER / OPENSSL
+  if (titleLower.includes('heartbleed') || titleLower.includes('ssl') || titleLower.includes('tls') || cveLower.includes('cve-2014-0160')) {
+    return {
+      detectedTargetPlatform: 'SSL/TLS Cryptographic Service (OpenSSL / IIS SSL)',
+      rootCause: 'Outdated SSL/TLS library version or insecure cryptographic cipher suite enabled.',
+      technicalExplanation: `The TLS service on ${cleanTarget}:${port} supports vulnerable OpenSSL heartbeat extensions or weak TLS 1.0/1.1 cipher suites, exposing encrypted process memory and session keys to remote extraction.`,
+      manualFix: 'Upgrade OpenSSL library to latest stable version, disable legacy TLS 1.0/1.1 protocols, and enforce TLS 1.2/1.3 with AES-GCM cipher suites.',
+      bashCommands: [
+        'sudo apt-get update && sudo apt-get install --only-upgrade openssl libssl-dev',
+        'sudo systemctl restart nginx || sudo systemctl restart apache2'
+      ],
+      powershellCommands: [
+        'New-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\Protocols\\TLS 1.0\\Server" -Name "Enabled" -Value 0 -PropertyType "DWord" -Force'
+      ],
+      verificationCommands: [
+        `nmap -p ${port} --script ssl-enum-ciphers ${cleanTarget}`
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'Web server / SSL listener service restart required',
+      estimatedImpact: 'Low - Brief web server worker process refresh.',
+      references: ['https://nvd.nist.gov/vuln/detail/CVE-2014-0160', 'https://www.openssl.org/news/secadv/20140407.txt']
+    };
+  }
+
+  // 8. DIRECTORY TRAVERSAL / INFORMATION DISCLOSURE
+  if (titleLower.includes('traversal') || titleLower.includes('disclosure') || titleLower.includes('sensitive') || cveLower.includes('cwe-22') || cveLower.includes('cwe-200')) {
+    return {
+      detectedTargetPlatform: 'Web Application & File Server System',
+      rootCause: 'Application or web server lacks input parameter sanitization for path traversal sequences.',
+      technicalExplanation: `Target application on ${cleanTarget}:${port} accepts unvalidated file path inputs containing dot-dot-slash (../) parameters, allowing remote actors to traverse outside the web directory and access internal configuration files.`,
+      manualFix: 'Implement canonical path resolution (e.g. path.resolve() / realpath()) and whitelist valid file parameters in backend source code.',
+      bashCommands: [
+        '# Enforce strict input validation in application layer',
+        '# Block ../ traversal patterns in web application firewall (WAF) or Nginx location block'
+      ],
+      configFilePath: '/etc/nginx/sites-available/default',
+      configSnippets: [
+        'if ($request_uri ~* "(\\.\\./|\\.\\.\\\\)") {',
+        '    return 403;',
+        '}'
+      ],
+      verificationCommands: [
+        `curl -i "http://${cleanTarget}:${port}/?file=../../../../etc/passwd"`
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'Web application server reload',
+      estimatedImpact: 'Zero Downtime - Application filter deployment.',
+      references: ['https://owasp.org/www-community/attacks/Path_Traversal']
+    };
+  }
+
+  // 9. MISSING HTTP SECURITY HEADERS
+  if (titleLower.includes('header') || titleLower.includes('clickjacking') || titleLower.includes('hsts') || titleLower.includes('csp')) {
+    return {
+      detectedTargetPlatform: 'Web Server (Nginx / Apache / IIS)',
+      rootCause: 'Web server is missing recommended HTTP security headers in response stream.',
+      technicalExplanation: `The HTTP web service on ${cleanTarget}:${port} does not output security response headers (X-Frame-Options, X-Content-Type-Options, Content-Security-Policy), leaving browsers susceptible to clickjacking and MIME-sniffing.`,
+      manualFix: 'Configure custom response headers in web server configuration files (nginx.conf, httpd.conf, or web.config).',
+      bashCommands: [
+        'sudo sed -i "/http {/a \\    add_header X-Frame-Options \\"SAMEORIGIN\\" always;\\n    add_header X-Content-Type-Options \\"nosniff\\" always;" /etc/nginx/nginx.conf',
+        'sudo nginx -t && sudo systemctl reload nginx'
+      ],
+      powershellCommands: [
+        'Import-Module WebAdministration',
+        'Set-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Frame-Options";value="SAMEORIGIN"}'
+      ],
+      verificationCommands: [
+        `curl -I http://${cleanTarget}:${port}/`
+      ],
+      rebootRequired: false,
+      serviceRestartRequired: 'systemctl reload nginx / W3SVC',
+      estimatedImpact: 'Zero Downtime - Hot reload without dropping active web sessions.',
+      references: ['https://owasp.org/www-project-secure-headers/']
+    };
+  }
+
+  // 10. NETWORK APPLIANCE / ROUTERS (Cisco, MikroTik, FortiGate)
   const isRouter = targetLower.endsWith('.1') || targetLower.includes('router') || targetLower.includes('gateway') || cleanTarget === '192.168.16.1' || targetLower.includes('cisco') || targetLower.includes('mikrotik') || targetLower.includes('forti');
 
   if (isRouter || serviceLower.includes('cisco') || serviceLower.includes('mikrotik') || serviceLower.includes('fortios') || bannerLower.includes('router')) {
@@ -73,34 +287,7 @@ export function generateDynamicRemediation(
         estimatedImpact: 'Low - Disables HTTP portal without dropping routed data plane traffic.',
         references: ['https://help.mikrotik.com/docs/display/ROS/Securing+Your+Router']
       };
-    } else if (targetLower.includes('forti') || bannerLower.includes('fortios')) {
-      return {
-        detectedTargetPlatform: 'Fortinet FortiGate Firewall (FortiOS 7.x)',
-        rootCause: 'HTTP administrative access enabled on external or internal interface.',
-        technicalExplanation: `FortiGate unit at ${cleanTarget} exposes HTTP admin portal on port ${port}.`,
-        manualFix: 'Disable HTTP admin port in FortiOS system global settings and force HTTPS redirection.',
-        cliCommands: [
-          'config system global',
-          'unset admin-port',
-          'set admin-sport 443',
-          'set admin-https-redirect enable',
-          'end'
-        ],
-        verificationCommands: [
-          'get system global | grep admin'
-        ],
-        rollbackSteps: [
-          'config system global',
-          'set admin-port 80',
-          'end'
-        ],
-        rebootRequired: false,
-        serviceRestartRequired: 'FortiOS administrative daemon reload',
-        estimatedImpact: 'Low - Restricts web admin port without interrupting firewall sessions.',
-        references: ['https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/330541/admin-http-https']
-      };
     } else {
-      // Default Cisco IOS / IOS-XE
       return {
         detectedTargetPlatform: 'Cisco IOS / IOS-XE Router/Switch Network Appliance',
         rootCause: 'Unencrypted Cisco HTTP Server active on management interface.',
@@ -110,205 +297,38 @@ export function generateDynamicRemediation(
           'configure terminal',
           'no ip http server',
           'ip http secure-server',
-          'ip http active-session-modules none',
           'end',
           'write memory'
         ],
         verificationCommands: [
-          'show ip http server status',
-          'show running-config | include ip http'
-        ],
-        rollbackSteps: [
-          'configure terminal',
-          'ip http server',
-          'end',
-          'write memory'
+          'show ip http server status'
         ],
         rebootRequired: false,
-        serviceRestartRequired: 'Immediate CLI active runtime apply',
-        estimatedImpact: 'Low - Disables HTTP web server; SSH/Telnet/HTTPS management remains active.',
+        estimatedImpact: 'Low - Disables HTTP web server; SSH/Telnet management remains active.',
         references: ['https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/configuration/15-sy/https-15-sy-book.html']
       };
     }
   }
 
-  // 3. WINDOWS SERVER / IIS DETECTION
-  const isWindows = targetLower.includes('win') || targetLower.includes('iis') || serviceLower.includes('iis') || serviceLower.includes('microsoft-ds') || port === 445 || bannerLower.includes('microsoft');
-
-  if (isWindows) {
-    if (port === 80 || port === 443 || serviceLower.includes('http') || serviceLower.includes('iis')) {
-      return {
-        detectedTargetPlatform: 'Windows Server 2022 / IIS 10.0 Web Server',
-        rootCause: 'IIS web server is missing security hardening HTTP headers (X-Frame-Options, X-Content-Type-Options, CSP).',
-        technicalExplanation: `The IIS web service running on ${cleanTarget}:${port} does not include defensive response headers in HTTP replies, leaving client browsers vulnerable to clickjacking and MIME-type sniffing attacks.`,
-        manualFix: 'Configure custom response headers in IIS Manager under HTTP Response Headers or directly in the system web.config XML file.',
-        powershellCommands: [
-          'Import-Module WebAdministration',
-          'Set-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Frame-Options";value="SAMEORIGIN"}',
-          'Set-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/httpProtocol/customHeaders" -name "." -value @{name="X-Content-Type-Options";value="nosniff"}',
-          'Restart-Service W3SVC'
-        ],
-        cmdCommands: [
-          'appcmd.exe set config /section:httpProtocol /+customHeaders.[name=\'X-Frame-Options\',value=\'SAMEORIGIN\']',
-          'appcmd.exe set config /section:httpProtocol /+customHeaders.[name=\'X-Content-Type-Options\',value=\'nosniff\']',
-          'iisreset /noforce'
-        ],
-        configFilePath: 'C:\\inetpub\\wwwroot\\web.config',
-        configSnippets: [
-          '<system.webServer>',
-          '  <httpProtocol>',
-          '    <customHeaders>',
-          '      <add name="X-Frame-Options" value="SAMEORIGIN" />',
-          '      <add name="X-Content-Type-Options" value="nosniff" />',
-          '    </customHeaders>',
-          '  </httpProtocol>',
-          '</system.webServer>'
-        ],
-        verificationCommands: [
-          `Invoke-WebRequest -Uri "http://${cleanTarget}:${port}" -Method Head | Select-Object -ExpandProperty Headers`
-        ],
-        rollbackSteps: [
-          'appcmd.exe set config /section:httpProtocol /-customHeaders.[name=\'X-Frame-Options\']',
-          'iisreset'
-        ],
-        rebootRequired: false,
-        serviceRestartRequired: 'W3SVC (IIS Web Publishing Service)',
-        estimatedImpact: 'Low - Brief IIS worker pool refresh (~1-2s).',
-        references: ['https://learn.microsoft.com/en-us/iis/configuration/system.webserver/httpprotocol/customheaders/']
-      };
-    } else {
-      // General Windows SMB / Active Directory
-      return {
-        detectedTargetPlatform: 'Windows Server Operating System (Active Directory / SMB)',
-        rootCause: 'Legacy SMBv1 protocol driver enabled or insecure system defaults.',
-        technicalExplanation: `Target ${cleanTarget} has SMB file sharing active on port 445. Legacy protocol support creates exposure to WannaCry / EternalBlue exploit vectors.`,
-        manualFix: 'Disable SMBv1 in Windows Server registry and PowerShell, then restart the LanmanServer service.',
-        powershellCommands: [
-          'Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force',
-          'Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" -Name "SMB1" -Type DWord -Value 0 -Force'
-        ],
-        cmdCommands: [
-          'sc.exe config lanmanserver start= auto',
-          'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v SMB1 /t REG_DWORD /d 0 /f'
-        ],
-        registryChanges: [
-          '[HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters]',
-          '"SMB1"=dword:00000000'
-        ],
-        verificationCommands: [
-          'Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol'
-        ],
-        rollbackSteps: [
-          'Set-SmbServerConfiguration -EnableSMB1Protocol $true -Force'
-        ],
-        rebootRequired: true,
-        serviceRestartRequired: 'LanmanServer / System reboot required for SMB kernel driver unload',
-        estimatedImpact: 'Medium - System reboot required.',
-        references: ['https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3']
-      };
-    }
-  }
-
-  // 4. LINUX DISTRIBUTIONS (Ubuntu, Debian, CentOS, RHEL, Rocky, Alpine)
-  const isRhelOrCentOS = targetLower.includes('rhel') || targetLower.includes('centos') || targetLower.includes('rocky') || targetLower.includes('alma');
-
-  if (isRhelOrCentOS) {
-    // Enterprise Linux (dnf/yum)
-    return {
-      detectedTargetPlatform: 'Enterprise Linux (RHEL 9 / Rocky Linux / CentOS) - Apache httpd',
-      rootCause: 'Web server missing defensive HTTP security response headers.',
-      technicalExplanation: `The Apache httpd web server running on ${cleanTarget}:${port} does not output security headers in response stream.`,
-      manualFix: 'Create a dedicated security configuration file in /etc/httpd/conf.d/ and test configuration with apachectl.',
-      bashCommands: [
-        'sudo dnf install -y httpd',
-        'echo "Header always set X-Frame-Options \"SAMEORIGIN\"" | sudo tee /etc/httpd/conf.d/security.conf',
-        'echo "Header always set X-Content-Type-Options \"nosniff\"" | sudo tee -a /etc/httpd/conf.d/security.conf',
-        'sudo apachectl configtest',
-        'sudo systemctl reload httpd'
-      ],
-      configFilePath: '/etc/httpd/conf.d/security.conf',
-      configSnippets: [
-        'Header always set X-Frame-Options "SAMEORIGIN"',
-        'Header always set X-Content-Type-Options "nosniff"',
-        'Header always set Content-Security-Policy "default-src \'self\';"'
-      ],
-      verificationCommands: [
-        `curl -I http://${cleanTarget}:${port}/`
-      ],
-      rollbackSteps: [
-        'sudo rm /etc/httpd/conf.d/security.conf',
-        'sudo systemctl reload httpd'
-      ],
-      rebootRequired: false,
-      serviceRestartRequired: 'systemctl reload httpd',
-      estimatedImpact: 'Zero Downtime - Hot reload without dropping active web sessions.',
-      references: ['https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/deploying_web_servers/']
-    };
-  }
-
-  // Default Linux (Ubuntu 22.04 / Debian LTS) - Nginx / Apache / SSH
-  if (port === 22 || serviceLower.includes('ssh')) {
-    return {
-      detectedTargetPlatform: 'Linux (Ubuntu 22.04 LTS) - OpenSSH Service',
-      rootCause: 'Insecure SSH daemon configuration allowing password authentication or root login.',
-      technicalExplanation: `The OpenSSH service on ${cleanTarget}:22 allows password authentication, exposing the server to brute-force credential stuffing attacks.`,
-      manualFix: 'Disable root SSH login and password authentication in /etc/ssh/sshd_config, then reload sshd.',
-      bashCommands: [
-        'sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak',
-        'sudo sed -i "s/#PermitRootLogin.*/PermitRootLogin no/" /etc/ssh/sshd_config',
-        'sudo sed -i "s/#PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config',
-        'sudo sshd -t',
-        'sudo systemctl reload sshd'
-      ],
-      configFilePath: '/etc/ssh/sshd_config',
-      configSnippets: [
-        'PermitRootLogin no',
-        'PasswordAuthentication no',
-        'X11Forwarding no',
-        'MaxAuthTries 3'
-      ],
-      verificationCommands: [
-        `ssh -o PreferredAuthentications=password root@${cleanTarget}`
-      ],
-      rollbackSteps: [
-        'sudo cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config',
-        'sudo systemctl reload sshd'
-      ],
-      rebootRequired: false,
-      serviceRestartRequired: 'systemctl reload sshd',
-      estimatedImpact: 'Zero Downtime - Existing SSH connections remain uninterrupted.',
-      references: ['https://ubuntu.com/server/docs/service-openssh']
-    };
-  }
-
-  // Nginx on Ubuntu / Debian (Default Web Server Platform)
+  // 11. GENERAL DYNAMIC FALLBACK MATCHING SPECIFIC VULNERABILITY TITLE & SEVERITY
   return {
-    detectedTargetPlatform: 'Linux (Ubuntu 22.04 LTS / Debian 12) - Nginx Web Server',
-    rootCause: 'Nginx web server missing HTTP security headers (X-Frame-Options, X-Content-Type-Options, CSP).',
-    technicalExplanation: `The active Nginx web server on host ${cleanTarget}:${port} is missing security hardening headers such as Content-Security-Policy and X-Frame-Options, exposing users to clickjacking and MIME sniffing.`,
-    manualFix: 'Edit Nginx security configuration (/etc/nginx/nginx.conf), append missing HTTP security headers, verify configuration syntax with nginx -t, and reload service.',
+    detectedTargetPlatform: `${service.toUpperCase()} Service on ${cleanTarget}`,
+    rootCause: `Discovered vulnerability flaw '${vulnTitle || 'Security Vulnerability'}' on port ${port}.`,
+    technicalExplanation: `Security assessment probe detected ${vulnTitle || 'vulnerable configuration'} on host ${cleanTarget}:${port}. Evidence: ${evidence || 'Service banner disclosed unpatched software version or unauthenticated endpoint.'}`,
+    manualFix: `Review service configuration for ${service} on target ${cleanTarget}, apply latest vendor security patches, and enforce restrictive access control rules.`,
     bashCommands: [
-      'sudo cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak',
-      'sudo sed -i "/http {/a \\    add_header X-Frame-Options \\"SAMEORIGIN\\" always;\\n    add_header X-Content-Type-Options \\"nosniff\\" always;" /etc/nginx/nginx.conf',
-      'sudo nginx -t',
-      'sudo systemctl reload nginx'
+      `# Inspect listening service configuration on port ${port}`,
+      `sudo netstat -tlpn | grep :${port} || sudo ss -tlpn | grep :${port}`
     ],
-    configFilePath: '/etc/nginx/nginx.conf',
-    configSnippets: [
-      'add_header X-Frame-Options "SAMEORIGIN" always;',
-      'add_header X-Content-Type-Options "nosniff" always;',
-      'add_header Content-Security-Policy "default-src \'self\';" always;'
+    powershellCommands: [
+      `Get-NetTCPConnection -LocalPort ${port} | Select-Object LocalAddress, LocalPort, State, OwningProcess`
     ],
     verificationCommands: [
-      `curl -I http://${cleanTarget}:${port}/`
-    ],
-    rollbackSteps: [
-      'sudo cp /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf',
-      'sudo systemctl reload nginx'
+      `nmap -sV -p ${port} ${cleanTarget}`
     ],
     rebootRequired: false,
-    serviceRestartRequired: 'systemctl reload nginx',
-    estimatedImpact: 'Zero Downtime - Hot reload without dropping active web connections.',
-    references: ['https://nginx.org/en/docs/http/ngx_http_headers_module.html', 'https://owasp.org/www-project-secure-headers/']
+    estimatedImpact: 'Low - Standard security configuration update.',
+    references: cveId ? [`https://nvd.nist.gov/vuln/detail/${cveId}`] : ['https://nvd.nist.gov/']
   };
 }
+

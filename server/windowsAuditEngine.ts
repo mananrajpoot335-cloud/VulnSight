@@ -334,10 +334,14 @@ export async function runWindowsSecurityAudit(
   // =========================================================================
 
   // A. Firewall Audit Evaluation
-  const fwDisabled = fwOutput.includes('False') || fwOutput.includes('false') || fwOutput.includes('Disabled') || fwOutput.includes('OFF') || (fwOutput.trim().length > 0 && !fwOutput.includes('True'));
+  const fwLower = fwOutput.toLowerCase();
+  const fwHasExplicitFalse = /enabled\s*:\s*false/i.test(fwOutput) || /state\s*:\s*off/i.test(fwOutput) || fwLower.includes('disabled');
+  const fwHasExplicitTrue = /enabled\s*:\s*true/i.test(fwOutput) || /state\s*:\s*on/i.test(fwOutput) || fwLower.includes('enabled');
+  const fwDisabled = fwHasExplicitFalse || (!fwHasExplicitTrue && fwOutput.trim().length > 0);
+
   if (fwDisabled) {
     vulnerabilities.push({
-      id: 'vuln-' + Date.now() + '-win-fw',
+      id: `vuln-${Date.now()}-${Math.floor(Math.random() * 10000)}-win-fw`,
       title: 'Windows Firewall Disabled',
       description: 'Windows Defender Firewall profile (Domain, Private, and/or Public) is set to disabled state, allowing unfiltered network ingress.',
       severity: 'High',
@@ -381,10 +385,14 @@ export async function runWindowsSecurityAudit(
   }
 
   // B. Windows Defender Antivirus Evaluation
-  const defenderDisabled = mpOutput.includes('False') || mpOutput.includes('false') || mpOutput.includes('Disabled') || mpOutput.includes('OFF') || (mpOutput.trim().length > 0 && !mpOutput.includes('True'));
+  const mpLower = mpOutput.toLowerCase();
+  const mpHasExplicitFalse = /realtimeprotectionenabled\s*:\s*false/i.test(mpOutput) || /antivirusenabled\s*:\s*false/i.test(mpOutput) || mpLower.includes('disabled');
+  const mpHasExplicitTrue = /realtimeprotectionenabled\s*:\s*true/i.test(mpOutput) || /antivirusenabled\s*:\s*true/i.test(mpOutput);
+  const defenderDisabled = mpHasExplicitFalse || (!mpHasExplicitTrue && mpOutput.trim().length > 0);
+
   if (defenderDisabled) {
     vulnerabilities.push({
-      id: 'vuln-' + Date.now() + '-win-def',
+      id: `vuln-${Date.now()}-${Math.floor(Math.random() * 10000)}-win-def`,
       title: 'Windows Defender Real-Time Antivirus Protection Disabled',
       description: 'Windows Defender Antivirus real-time monitoring and AMService execution is currently turned off on target system.',
       severity: 'High',
