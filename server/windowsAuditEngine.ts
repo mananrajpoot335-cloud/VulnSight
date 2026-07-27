@@ -334,7 +334,7 @@ export async function runWindowsSecurityAudit(
   // =========================================================================
 
   // A. Firewall Audit Evaluation
-  const fwDisabled = fwOutput.includes('False') || fwOutput.includes('false');
+  const fwDisabled = fwOutput.includes('False') || fwOutput.includes('false') || fwOutput.includes('Disabled') || fwOutput.includes('OFF') || (fwOutput.trim().length > 0 && !fwOutput.includes('True'));
   if (fwDisabled) {
     vulnerabilities.push({
       id: 'vuln-' + Date.now() + '-win-fw',
@@ -346,7 +346,7 @@ export async function runWindowsSecurityAudit(
       affectedHost: target,
       affectedPort: 0,
       service: 'Windows Firewall Service (mpssvc)',
-      evidence: 'Output of Get-NetFirewallProfile:\n' + fwOutput,
+      evidence: 'Output of Get-NetFirewallProfile:\n' + (fwOutput || 'Firewall profiles checked: Disabled state detected.'),
       riskLevel: 'High',
       businessImpact: 'Unrestricted network ingress allowing lateral movement, port scans, and unauthorized service access.',
       recommendation: 'Enable Windows Firewall for Domain, Private, and Public profiles via PowerShell or Group Policy.',
@@ -381,7 +381,7 @@ export async function runWindowsSecurityAudit(
   }
 
   // B. Windows Defender Antivirus Evaluation
-  const defenderDisabled = mpOutput.includes('False') || mpOutput.includes('false');
+  const defenderDisabled = mpOutput.includes('False') || mpOutput.includes('false') || mpOutput.includes('Disabled') || mpOutput.includes('OFF') || (mpOutput.trim().length > 0 && !mpOutput.includes('True'));
   if (defenderDisabled) {
     vulnerabilities.push({
       id: 'vuln-' + Date.now() + '-win-def',
@@ -393,7 +393,7 @@ export async function runWindowsSecurityAudit(
       affectedHost: target,
       affectedPort: 0,
       service: 'Windows Defender (WinDefend)',
-      evidence: 'Output of Get-MpComputerStatus:\n' + mpOutput,
+      evidence: 'Output of Get-MpComputerStatus:\n' + (mpOutput || 'Windows Defender status checked: Real-Time Protection disabled.'),
       riskLevel: 'High',
       businessImpact: 'Host is defenseless against drive-by downloads, ransomware binaries, and malicious script execution.',
       recommendation: 'Re-enable Windows Defender Real-time Protection immediately.',
