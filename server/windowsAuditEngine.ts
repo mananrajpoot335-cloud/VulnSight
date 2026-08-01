@@ -264,21 +264,30 @@ export async function runWindowsSecurityAudit(
   // 1. Windows Firewall Status
   console.log('[Windows Audit] Running Get-NetFirewallProfile...');
   try {
-    fwOutput = execSync('powershell.exe -NoProfile -Command "Get-NetFirewallProfile | Select-Object Name, Enabled"', {
+    fwOutput = execSync('powershell.exe -NoProfile -Command "Get-NetFirewallProfile | Format-List Name, Enabled"', {
       timeout: 5000,
       encoding: 'utf-8'
     });
     livePsAvailable = true;
     rawLogs += '[PowerShell Query Success - Get-NetFirewallProfile]\n' + fwOutput + '\n';
   } catch (err: any) {
-    console.error('[Windows Audit Error] Get-NetFirewallProfile failed:', err.message || err);
-    rawLogs += '[PowerShell Exec Error - Get-NetFirewallProfile]: ' + (err.message || String(err)) + '\n';
+    try {
+      fwOutput = execSync('netsh advfirewall show allprofiles state', {
+        timeout: 5000,
+        encoding: 'utf-8'
+      });
+      livePsAvailable = true;
+      rawLogs += '[netsh Query Success - advfirewall show allprofiles]\n' + fwOutput + '\n';
+    } catch (e: any) {
+      console.error('[Windows Audit Error] Get-NetFirewallProfile failed:', err.message || err);
+      rawLogs += '[PowerShell Exec Error - Get-NetFirewallProfile]: ' + (err.message || String(err)) + '\n';
+    }
   }
 
   // 2. Windows Defender Real-Time Protection Status
   console.log('[Windows Audit] Running Get-MpComputerStatus...');
   try {
-    mpOutput = execSync('powershell.exe -NoProfile -Command "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled, AMServiceEnabled"', {
+    mpOutput = execSync('powershell.exe -NoProfile -Command "Get-MpComputerStatus | Format-List RealTimeProtectionEnabled, AntivirusEnabled, AMServiceEnabled"', {
       timeout: 5000,
       encoding: 'utf-8'
     });
@@ -334,23 +343,43 @@ export async function runWindowsSecurityAudit(
   // =========================================================================
 
   // A. Firewall Audit Evaluation
-  const fwLower = fwOutput.toLowerCase();
-  const fwHasExplicitFalse = /enabled\s*:\s*false/i.test(fwOutput) || /state\s*:\s*off/i.test(fwOutput) || fwLower.includes('disabled');
-  const fwHasExplicitTrue = /enabled\s*:\s*true/i.test(fwOutput) || /state\s*:\s*on/i.test(fwOutput) || fwLower.includes('enabled');
-  const fwDisabled = fwHasExplicitFalse || (!fwHasExplicitTrue && fwOutput.trim().length > 0);
+  let fwDisabled = false;
+  let disabledProfilesList: string[] = [];
+
+  const fwLines = fwOutput.split('\n').map(l => l.trim()).filter(Boolean);
+  for (let i = 0; i < fwLines.length; i++) {
+    const line = fwLines[i];
+    if (/enabled\s*:\s*false/i.test(line) || /state\s*:\s*off/i.test(line) || /^domain\s+false/i.test(line) || /^private\s+false/i.test(line) || /^public\s+false/i.test(line) || /state\s+off/i.test(line)) {
+      fwDisabled = true;
+      const prevLine = i > 0 ? fwLines[i - 1] : '';
+      if (/domain/i.test(prevLine) || /domain/i.test(line)) disabledProfilesList.push('Domain Profile');
+      else if (/private/i.test(prevLine) || /private/i.test(line)) disabledProfilesList.push('Private Profile');
+      else if (/public/i.test(prevLine) || /public/i.test(line)) disabledProfilesList.push('Public Profile');
+      else disabledProfilesList.push('Firewall Profile');
+    }
+  }
+
+  // Fallback regex match if list parsing missed table format
+  if (!fwDisabled && fwOutput.trim().length > 0) {
+    if (/\bfalse\b/i.test(fwOutput) || /\boff\b/i.test(fwOutput) || /disabled/i.test(fwOutput)) {
+      fwDisabled = true;
+      disabledProfilesList.push('Domain / Private / Public Firewall Profile');
+    }
+  }
 
   if (fwDisabled) {
+    const profSummary = disabledProfilesList.length > 0 ? Array.from(new Set(disabledProfilesList)).join(', ') : 'Domain, Private, Public Profiles';
     vulnerabilities.push({
       id: `vuln-${Date.now()}-${Math.floor(Math.random() * 10000)}-win-fw`,
-      title: 'Windows Firewall Disabled',
-      description: 'Windows Defender Firewall profile (Domain, Private, and/or Public) is set to disabled state, allowing unfiltered network ingress.',
+      title: 'Windows Firewall Disabled / Filter Rules Turned Off',
+      description: `Windows Defender Firewall profile (${profSummary}) is set to disabled/OFF state on target system, leaving network ingress filtering inactive.`,
       severity: 'High',
       cvssScore: 8.2,
       cveId: 'CWE-284',
       affectedHost: target,
       affectedPort: 0,
       service: 'Windows Firewall Service (mpssvc)',
-      evidence: 'Output of Get-NetFirewallProfile:\n' + (fwOutput || 'Firewall profiles checked: Disabled state detected.'),
+      evidence: `Windows Firewall Status Audit Evidence:\n${fwOutput.trim() || 'Firewall state checked: Disabled profiles detected: ' + profSummary}`,
       riskLevel: 'High',
       businessImpact: 'Unrestricted network ingress allowing lateral movement, port scans, and unauthorized service access.',
       recommendation: 'Enable Windows Firewall for Domain, Private, and Public profiles via PowerShell or Group Policy.',
@@ -385,10 +414,19 @@ export async function runWindowsSecurityAudit(
   }
 
   // B. Windows Defender Antivirus Evaluation
-  const mpLower = mpOutput.toLowerCase();
-  const mpHasExplicitFalse = /realtimeprotectionenabled\s*:\s*false/i.test(mpOutput) || /antivirusenabled\s*:\s*false/i.test(mpOutput) || mpLower.includes('disabled');
-  const mpHasExplicitTrue = /realtimeprotectionenabled\s*:\s*true/i.test(mpOutput) || /antivirusenabled\s*:\s*true/i.test(mpOutput);
-  const defenderDisabled = mpHasExplicitFalse || (!mpHasExplicitTrue && mpOutput.trim().length > 0);
+  let defenderDisabled = false;
+  const mpLines = mpOutput.split('\n').map(l => l.trim()).filter(Boolean);
+  for (const line of mpLines) {
+    if (/realtimeprotectionenabled\s*:\s*false/i.test(line) || /antivirusenabled\s*:\s*false/i.test(line) || /amserviceenabled\s*:\s*false/i.test(line)) {
+      defenderDisabled = true;
+    }
+  }
+
+  if (!defenderDisabled && mpOutput.trim().length > 0) {
+    if (/\bfalse\b/i.test(mpOutput) || /disabled/i.test(mpOutput)) {
+      defenderDisabled = true;
+    }
+  }
 
   if (defenderDisabled) {
     vulnerabilities.push({

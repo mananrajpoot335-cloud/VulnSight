@@ -141,6 +141,23 @@ export const DomainAssessmentView: React.FC<DomainAssessmentViewProps> = ({ scan
             </div>
 
             <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 col-span-2 space-y-0.5">
+              <div className="text-[10px] text-[#64748b] uppercase font-bold">Domain Owner / Contact Email</div>
+              <div className="font-mono text-[#38bdf8] font-bold">
+                {domainInfo?.registrantEmail ? (
+                  <span className="flex items-center space-x-1.5 text-[#38bdf8]">
+                    <span>{domainInfo.registrantEmail}</span>
+                  </span>
+                ) : domainInfo?.adminEmail ? (
+                  <span className="text-[#38bdf8]">{domainInfo.adminEmail} (Admin)</span>
+                ) : domainInfo?.abuseEmail ? (
+                  <span className="text-[#94a3b8]">{domainInfo.abuseEmail} (Abuse Contact)</span>
+                ) : (
+                  <span className="text-[#64748b] italic">Not Disclosed / Privacy Protected</span>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-[#0f172a] p-2.5 rounded border border-[#334155]/60 col-span-2 space-y-0.5">
               <div className="text-[10px] text-[#64748b] uppercase font-bold">Authoritative Name Servers (DNS)</div>
               <div className="font-mono text-[#38bdf8]">{val(domainInfo?.authoritativeNameServers || dnsRecords?.nsRecords)}</div>
             </div>

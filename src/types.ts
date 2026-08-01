@@ -156,6 +156,12 @@ export interface DomainInfo {
   dnssecStatus?: string;
   whoisRaw?: string;
   registrantCountry?: string;
+  registrantEmail?: string;
+  adminEmail?: string;
+  techEmail?: string;
+  abuseEmail?: string;
+  registrarContact?: string;
+  privacyProtected?: boolean;
 }
 
 export interface DnsRecordDetails {

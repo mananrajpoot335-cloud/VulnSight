@@ -9,7 +9,7 @@ import { GoogleGenAI } from '@google/genai';
 import { generateDynamicRemediation } from './server/remediationEngine.js';
 import { runWindowsSecurityAudit } from './server/windowsAuditEngine.js';
 import { performDomainAssessment, classifyTarget } from './server/domainLookup.js';
-import { performHostDiscovery } from './server/hostDiscovery.js';
+import { performHostDiscovery, expandCidrSubnet } from './server/hostDiscovery.js';
 import { ModuleExecutionLog, ScanDiagnostics, Vulnerability } from './src/types.js';
 
 dotenv.config();
@@ -310,9 +310,39 @@ app.post('/api/scans/launch', async (req, res) => {
   // MODULE 1: Host Discovery
   // -------------------------------------------------------------------------
   console.log('[Module 1: Host Discovery] Executing enterprise multi-method host discovery probes...');
-  const hostDiscoveryResult = await performHostDiscovery(cleanTarget);
-  const isHostUp = isLocalHost || hostDiscoveryResult.isHostUp;
-  const activePorts = hostDiscoveryResult.activePorts;
+  const expandedTargetIps = String(target).includes('/') ? expandCidrSubnet(target) : [cleanTarget];
+  
+  let hostDiscoveryResult = await performHostDiscovery(cleanTarget);
+  let isHostUp = isLocalHost || hostDiscoveryResult.isHostUp;
+  let activePorts = hostDiscoveryResult.activePorts;
+
+  if (expandedTargetIps.length > 1) {
+    console.log(`[CIDR Scan Engine] Target "${target}" expanded to ${expandedTargetIps.length} host IPs for range assessment.`);
+    // Probe expanded hosts concurrently in batches
+    const hostResults = await Promise.all(
+      expandedTargetIps.slice(0, 32).map(ip => performHostDiscovery(ip))
+    );
+
+    discoveredHosts = hostResults.map((hr, idx) => ({
+      ip: expandedTargetIps[idx],
+      hostname: expandedTargetIps[idx],
+      status: hr.isHostUp ? 'Up' : 'Down',
+      latencyMs: hr.isHostUp ? 1.5 : 0,
+      openPorts: hr.activePorts.map(p => ({
+        port: p,
+        service: p === 80 ? 'http' : p === 443 ? 'https' : p === 445 ? 'microsoft-ds' : p === 135 ? 'msrpc' : p === 3389 ? 'ms-wbt-server' : p === 22 ? 'ssh' : 'unknown',
+        version: 'Detected Service'
+      })),
+      osGuess: hr.activePorts.includes(135) || hr.activePorts.includes(445) || hr.activePorts.includes(3389) ? 'Microsoft Windows' : hr.activePorts.includes(22) ? 'Linux / Unix' : 'Network Host'
+    }));
+
+    const activeHosts = hostResults.filter(hr => hr.isHostUp);
+    if (activeHosts.length > 0) {
+      isHostUp = true;
+      hostDiscoveryResult = activeHosts[0];
+      activePorts = Array.from(new Set(activeHosts.flatMap(hr => hr.activePorts)));
+    }
+  }
 
   moduleExecutionLogs.push({
     moduleName: 'Host Discovery',
@@ -411,14 +441,16 @@ app.post('/api/scans/launch', async (req, res) => {
     findingsCount: 0
   });
 
-  discoveredHosts.push({
-    ip: cleanTarget,
-    hostname: cleanTarget,
-    status: isHostUp ? 'Up' : 'Down',
-    latencyMs: isHostUp ? 1.2 : 0,
-    openPorts: openPortsObjects,
-    osGuess
-  });
+  if (discoveredHosts.length === 0) {
+    discoveredHosts.push({
+      ip: cleanTarget,
+      hostname: cleanTarget,
+      status: isHostUp ? 'Up' : 'Down',
+      latencyMs: isHostUp ? 1.2 : 0,
+      openPorts: openPortsObjects,
+      osGuess
+    });
+  }
 
   rawOutputs['nmap'] = `Nmap 7.94 scan report for ${cleanTarget}\nHost is ${isHostUp ? 'up' : 'down'}.\n` +
     openPortsObjects.map(o => `${o.port}/tcp open  ${o.service}  ${o.version}`).join('\n');

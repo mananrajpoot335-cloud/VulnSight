@@ -285,10 +285,52 @@ async function runArpProbe(target: string): Promise<ProbeLog> {
 }
 
 /**
- * Enterprise Host Discovery Engine (Nmap/Nessus Standard)
- * Executes multi-method host probes (ICMP, ARP, TCP SYN, TCP Connect, HTTP, HTTPS, SMB)
- * and determines host reachability.
+ * Helper to expand CIDR notation (e.g., 192.168.1.0/24 or 192.168.1.1/28) into individual IP addresses.
+ * Limits scan range to a maximum of 256 IPs (/24) for safe execution.
  */
+export function expandCidrSubnet(cidrString: string): string[] {
+  const clean = cidrString.trim();
+  if (!clean.includes('/')) {
+    return [clean];
+  }
+
+  const [baseIp, maskStr] = clean.split('/');
+  const prefixLen = parseInt(maskStr, 10);
+  if (isNaN(prefixLen) || prefixLen < 16 || prefixLen > 32) {
+    return [baseIp];
+  }
+
+  const octets = baseIp.split('.').map(Number);
+  if (octets.length !== 4 || octets.some(o => isNaN(o) || o < 0 || o > 255)) {
+    return [baseIp];
+  }
+
+  // Convert IP to 32-bit integer
+  const ipInt = (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3];
+  const hostCount = Math.pow(2, 32 - prefixLen);
+  const netmaskInt = prefixLen === 0 ? 0 : (~0 << (32 - prefixLen)) >>> 0;
+  const networkInt = (ipInt & netmaskInt) >>> 0;
+
+  const ips: string[] = [];
+  // Max 256 IPs to prevent memory overload
+  const countToScan = Math.min(hostCount, 256);
+
+  for (let i = 0; i < countToScan; i++) {
+    const currentIpInt = (networkInt + i) >>> 0;
+    const o1 = (currentIpInt >>> 24) & 255;
+    const o2 = (currentIpInt >>> 16) & 255;
+    const o3 = (currentIpInt >>> 8) & 255;
+    const o4 = currentIpInt & 255;
+
+    // Skip network address (.0) and broadcast address (.255) for /24 if range > 2
+    if (countToScan >= 4 && (o4 === 0 || o4 === 255)) {
+      continue;
+    }
+    ips.push(`${o1}.${o2}.${o3}.${o4}`);
+  }
+
+  return ips.length > 0 ? ips : [baseIp];
+}
 export async function performHostDiscovery(target: string): Promise<HostDiscoveryResult> {
   console.log(`\n============================================================`);
   console.log(`[Host Discovery Engine] Initiating Enterprise Host Discovery for ${target}...`);

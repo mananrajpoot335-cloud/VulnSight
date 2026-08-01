@@ -178,6 +178,31 @@ async function performWhoisQuery(domain: string): Promise<{ rawText: string; par
     const countryMatch = raw.match(/(?:Registrant Country|Country):\s*(.+)/i);
     if (countryMatch) parsed.registrantCountry = countryMatch[1].trim();
 
+    // Parse Registrant Email
+    const regEmailMatch = raw.match(/(?:Registrant Email|Registrant Contact Email|Registrant Contact|Registrant E-Mail):\s*([^\s@]+@[^\s@]+\.[^\s@]+)/i);
+    if (regEmailMatch) parsed.registrantEmail = regEmailMatch[1].trim();
+
+    // Parse Admin Email
+    const adminEmailMatch = raw.match(/(?:Admin Email|Administrative Contact Email|Admin Contact Email|Admin E-Mail):\s*([^\s@]+@[^\s@]+\.[^\s@]+)/i);
+    if (adminEmailMatch) parsed.adminEmail = adminEmailMatch[1].trim();
+
+    // Parse Tech Email
+    const techEmailMatch = raw.match(/(?:Tech Email|Technical Contact Email|Tech Contact Email|Tech E-Mail):\s*([^\s@]+@[^\s@]+\.[^\s@]+)/i);
+    if (techEmailMatch) parsed.techEmail = techEmailMatch[1].trim();
+
+    // Parse Abuse Email
+    const abuseEmailMatch = raw.match(/(?:Registrar Abuse Contact Email|Abuse Contact Email|Abuse Email):\s*([^\s@]+@[^\s@]+\.[^\s@]+)/i);
+    if (abuseEmailMatch) parsed.abuseEmail = abuseEmailMatch[1].trim();
+
+    // Fallback email parsing from WHOIS block
+    if (!parsed.registrantEmail) {
+      const emails = Array.from(new Set(raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []));
+      if (emails.length > 0) {
+        const nonAbuse = emails.filter(e => !/abuse|domaincontrol|secureserver|markmonitor/i.test(e));
+        if (nonAbuse.length > 0) parsed.registrantEmail = nonAbuse[0];
+      }
+    }
+
     console.log(`[WHOIS TCP] Successfully parsed WHOIS fields:`, JSON.stringify(parsed));
     return { rawText: raw, parsed };
   } catch (err: any) {
@@ -617,6 +642,21 @@ export async function performDomainAssessment(
         if (registryEntity) {
           domainInfo.registry = registryEntity.vcardArray?.[1]?.find((v: any) => v[0] === 'fn')?.[3] || registryEntity.handle;
         }
+
+        // Extract emails from vcardArray across entities
+        for (const entity of domainRdap.entities) {
+          if (Array.isArray(entity.vcardArray?.[1])) {
+            const emailEntry = entity.vcardArray[1].find((v: any) => v[0] === 'email');
+            if (emailEntry && emailEntry[3]) {
+              const emailVal = String(emailEntry[3]).trim();
+              if (entity.roles?.includes('registrant') && !domainInfo.registrantEmail) domainInfo.registrantEmail = emailVal;
+              else if (entity.roles?.includes('administrative') && !domainInfo.adminEmail) domainInfo.adminEmail = emailVal;
+              else if (entity.roles?.includes('technical') && !domainInfo.techEmail) domainInfo.techEmail = emailVal;
+              else if (entity.roles?.includes('abuse') && !domainInfo.abuseEmail) domainInfo.abuseEmail = emailVal;
+              else if (!domainInfo.registrantEmail) domainInfo.registrantEmail = emailVal;
+            }
+          }
+        }
       }
 
       if (Array.isArray(domainRdap.events)) {
@@ -666,6 +706,10 @@ export async function performDomainAssessment(
       domainInfo.registryNameServers = whoisResult.parsed.registryNameServers;
     }
     if (whoisResult.parsed.registrantCountry && !domainInfo.registrantCountry) domainInfo.registrantCountry = whoisResult.parsed.registrantCountry;
+    if (whoisResult.parsed.registrantEmail && !domainInfo.registrantEmail) domainInfo.registrantEmail = whoisResult.parsed.registrantEmail;
+    if (whoisResult.parsed.adminEmail && !domainInfo.adminEmail) domainInfo.adminEmail = whoisResult.parsed.adminEmail;
+    if (whoisResult.parsed.techEmail && !domainInfo.techEmail) domainInfo.techEmail = whoisResult.parsed.techEmail;
+    if (whoisResult.parsed.abuseEmail && !domainInfo.abuseEmail) domainInfo.abuseEmail = whoisResult.parsed.abuseEmail;
   }
 
   // Combine Name Servers cleanly
