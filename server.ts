@@ -2,8 +2,6 @@ import express from 'express';
 import path from 'path';
 import net from 'net';
 import os from 'os';
-import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { generateDynamicRemediation } from './server/remediationEngine.js';
@@ -14,11 +12,8 @@ import { ModuleExecutionLog, ScanDiagnostics, Vulnerability } from './src/types.
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -908,7 +903,12 @@ app.delete('/api/scans/:id', (req, res) => {
 
 // Vite Middleware for Dev or Static files for Production
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  const isProduction =
+    process.env.NODE_ENV === 'production' ||
+    Boolean(process.argv[1] && process.argv[1].endsWith('.cjs'));
+
+  if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
